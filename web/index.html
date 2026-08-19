@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HQ-Agents</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  /* munder-difflin design language: cream paper surfaces, ink hairlines,
+     zero radius, zero blur, hard offset shadows, pixel font for tiny
+     uppercase labels only. */
+  :root {
+    --cream-50: #FFFDF5; --cream-100: #FFF8E7; --cream-200: #F4E9C7; --cream-300: #E8D9A0;
+    --paper-100: #FCFAF0; --paper-200: #F0EAD2;
+    --ink-900: #1A1320; --ink-700: #3D2E4A; --ink-500: #6B5878; --ink-300: #A899B5; --ink-100: #D9CFE0;
+    --coral: #D96A62; --coral-light: #F3D3CD;
+    --mint: #5CA97A; --mint-light: #D2E7DA;
+    --sky: #4F9FAF; --sky-light: #CFE5E9;
+    --lemon: #DCAB3C; --lemon-light: #F3E4BC;
+    --lilac: #9482D3; --lilac-light: #E0DAF2;
+    --peach: #D99168; --peach-light: #F3DACA;
+    --font-display: "Press Start 2P", monospace;
+    --font-ui: "Inter", -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    --hairline: inset 0 0 0 1px var(--ink-300);
+    --shadow-hard: 3px 3px 0 rgba(26, 19, 32, 0.14);
+  }
+  * { box-sizing: border-box; border-radius: 0 !important; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; overflow: hidden; display: flex; flex-direction: column;
+    background: var(--cream-50)
+      repeating-linear-gradient(45deg, rgba(232,217,160,0.20) 0 1px, transparent 1px 6px);
+    color: var(--ink-900); font-family: var(--font-ui); font-size: 14px; line-height: 20px;
+  }
+  canvas, img, svg { image-rendering: pixelated; }
+  ::-webkit-scrollbar { width: 12px; height: 12px; }
+  ::-webkit-scrollbar-track { background: var(--cream-200); box-shadow: inset 0 0 0 1px var(--ink-100); }
+  ::-webkit-scrollbar-thumb { background: var(--ink-700); box-shadow: inset 0 0 0 1px var(--ink-300); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ink-900); }
+  button { transition: transform 90ms steps(2, end); }
+  :focus-visible { outline: 1px solid var(--ink-300); outline-offset: 2px; }
+
+  .display { font-family: var(--font-display); text-transform: uppercase; }
+  .lbl { font-family: var(--font-display); font-size: 8px; line-height: 12px; text-transform: uppercase; color: var(--ink-500); }
+
+  /* ---------- title bar ---------- */
+  header {
+    flex: 0 0 36px; display: flex; align-items: center; gap: 12px; padding: 0 12px;
+    background: linear-gradient(var(--cream-100), var(--cream-200));
+    box-shadow: inset 0 -1px 0 var(--ink-300);
+  }
+  header .logo { font-family: var(--font-display); font-size: 10px; color: var(--ink-900); }
+  header .logo em { color: var(--coral); font-style: normal; }
+  .tabs { display: flex; gap: 6px; }
+  .tab {
+    font-family: var(--font-display); font-size: 8px; text-transform: uppercase; cursor: pointer;
+    padding: 6px 10px 4px; background: var(--cream-100); color: var(--ink-500); border: none;
+    box-shadow: var(--hairline);
+  }
+  .tab.active { background: var(--ink-900); color: var(--cream-50); }
+  .spacer { flex: 1; }
+  .ticker { display: flex; gap: 12px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-500); }
+  .ticker b { color: var(--ink-900); font-weight: 600; }
+  .conn { width: 8px; height: 8px; background: var(--coral); box-shadow: inset 0 0 0 1px var(--ink-300); }
+  .conn.on { background: var(--mint); }
+
+  .btn {
+    font-family: var(--font-ui); font-size: 12px; font-weight: 500; cursor: pointer; border: none;
+    height: 24px; padding: 0 10px; background: var(--cream-100); color: var(--ink-900);
+    box-shadow: var(--hairline), 0 1px 0 var(--ink-300);
+  }
+  .btn:active { transform: translateY(1px); box-shadow: var(--hairline); }
+  .btn.primary { background: var(--ink-900); color: var(--cream-50); box-shadow: inset 0 0 0 1px var(--ink-900), 0 1px 0 var(--ink-500); }
+  .btn.danger { color: var(--coral); }
+  .btn:disabled { color: var(--ink-500); cursor: default; }
+
+  /* ---------- main row ---------- */
+  main { flex: 1; display: flex; min-height: 0; padding: 12px; gap: 10px; }
+  #stage {
+    flex: 1; position: relative; min-width: 0; background: var(--ink-900);
+    box-shadow: var(--hairline), var(--shadow-hard);
+  }
+  #floorCanvas, #graphSvg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .hidden { display: none !important; }
+  #floorHint {
+    position: absolute; left: 10px; bottom: 8px; z-index: 5; pointer-events: none;
+    font-family: var(--font-mono); font-size: 11px; color: rgba(255, 253, 245, 0.5);
+  }
+  #sayInput {
+    position: absolute; right: 10px; bottom: 8px; z-index: 6; width: 260px;
+    font-family: var(--font-mono); font-size: 12px;
+    background: rgba(255, 253, 245, 0.92); box-shadow: inset 0 0 0 1px var(--ink-500);
+  }
+  .swatch {
+    width: 26px; height: 26px; border: none; cursor: pointer; padding: 0 6px;
+    box-shadow: inset 0 0 0 1px var(--ink-300); background: var(--cream-100);
+    font-family: var(--font-mono); font-size: 10px; color: var(--ink-700); min-width: 26px;
+  }
+  .swatch.sel { box-shadow: inset 0 0 0 1.5px var(--ink-500), 0 0 0 2px var(--ink-900); }
+  #personPanel { flex: 1; overflow-y: auto; background: var(--cream-50); min-height: 0; }
+
+  /* ---------- sidebar (agent detail panel) ---------- */
+  aside {
+    width: 420px; flex: 0 0 420px; display: flex; flex-direction: column; min-height: 0;
+    background: var(--paper-100); box-shadow: var(--hairline), var(--shadow-hard);
+  }
+  .section { padding: 8px 10px; box-shadow: inset 0 -1px 0 var(--ink-100); }
+  .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+
+  #emptyState { padding: 36px 20px; text-align: center; color: var(--ink-500); font-size: 13px; line-height: 1.7; }
+  #emptyState .display { font-size: 10px; color: var(--ink-700); display: block; margin-bottom: 10px; }
+
+  /* chat header */
+  #chatHeader { padding: 8px 10px; box-shadow: inset 0 -1px 0 var(--ink-300); }
+  #chatHeader .who { display: flex; align-items: center; gap: 8px; }
+  #portrait { width: 32px; height: 32px; flex: 0 0 auto; box-shadow: var(--hairline); display:flex; align-items:center; justify-content:center; font-size: 17px; }
+  #chatName { font-family: var(--font-display); font-size: 10px; }
+  #chatRole { font-size: 12px; color: var(--ink-500); }
+  #chatMeta { display: flex; gap: 6px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+
+  select, input[type=text], textarea {
+    font-family: var(--font-ui); font-size: 13px; color: var(--ink-900);
+    background: var(--paper-100); border: none; box-shadow: inset 0 0 0 1px var(--ink-100);
+    padding: 5px 8px 4px;
+  }
+  select:focus, input:focus, textarea:focus { box-shadow: inset 0 0 0 1px var(--ink-500); outline: none; }
+
+  /* chat log */
+  #chatLog { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--cream-50); min-height: 80px; }
+  .msg { max-width: 90%; padding: 6px 9px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; box-shadow: var(--hairline); }
+  .msg.from-user { align-self: flex-end; background: var(--sky-light); }
+  .msg.from-agent { align-self: flex-start; background: var(--cream-100); }
+  .msg .act { font-family: var(--font-display); font-size: 7px; letter-spacing: 0; color: var(--ink-500); display: block; margin-bottom: 3px; text-transform: uppercase; }
+  .msg.narration { align-self: center; background: transparent; box-shadow: none; color: var(--ink-500); font-style: italic; font-size: 11.5px; text-align: center; }
+  #chatInputRow { display: flex; gap: 6px; padding: 8px 10px; box-shadow: inset 0 1px 0 var(--ink-100); }
+  #chatInput { flex: 1; resize: none; height: 52px; font-family: var(--font-mono); font-size: 12.5px; }
+
+  /* tasks */
+  #taskList { display: flex; flex-direction: column; gap: 3px; max-height: 14vh; overflow-y: auto; font-size: 12.5px; }
+  .task-row { display: flex; gap: 6px; align-items: baseline; }
+  .chip {
+    font-family: var(--font-display); font-size: 7px; text-transform: uppercase; padding: 3px 6px 2px;
+    background: var(--cream-100); color: var(--ink-500); box-shadow: var(--hairline); flex: 0 0 auto;
+  }
+  .chip.in_progress { color: var(--lemon); box-shadow: inset 0 0 0 1px var(--lemon); }
+  .chip.review { color: var(--sky); box-shadow: inset 0 0 0 1px var(--sky); }
+  .chip.done { color: var(--mint); box-shadow: inset 0 0 0 1px var(--mint); }
+
+  /* usage */
+  #usageTable { width: 100%; font-family: var(--font-mono); font-size: 11px; border-collapse: collapse; }
+  #usageTable td, #usageTable th { padding: 2px 5px; text-align: right; color: var(--ink-500); white-space: nowrap; }
+  #usageTable th { font-family: var(--font-display); font-size: 7px; text-transform: uppercase; border-bottom: 1px solid var(--ink-100); font-weight: normal; }
+  #usageTable td:first-child, #usageTable th:first-child { text-align: left; color: var(--ink-900); }
+
+  /* activity feed */
+  #feed { max-height: 16vh; overflow-y: auto; font-family: var(--font-mono); font-size: 11px; line-height: 1.55; color: var(--ink-700); }
+  #feed .ev b { color: var(--ink-900); font-weight: 600; }
+  #feed .ev .t { color: var(--ink-300); }
+  #feed .ev.hot { color: var(--coral); }
+
+  /* ---------- bottom agent strip ---------- */
+  #strip {
+    flex: 0 0 112px; display: flex; gap: 8px; align-items: stretch; overflow-x: auto; overflow-y: hidden;
+    padding: 8px 12px; background: var(--cream-200); box-shadow: inset 0 1px 0 var(--ink-300);
+  }
+  .card {
+    flex: 0 0 168px; position: relative; cursor: pointer; padding: 8px; display: flex; gap: 8px;
+    background: var(--cream-100); box-shadow: var(--hairline); border: none; text-align: left;
+    font-family: var(--font-ui);
+  }
+  .card.selected { box-shadow: inset 0 0 0 2px var(--ink-900); }
+  .card .portrait { width: 40px; height: 52px; flex: 0 0 auto; box-shadow: var(--hairline); display: flex; align-items: center; justify-content: center; font-size: 21px; }
+  .card .cname { font-family: var(--font-display); font-size: 8px; line-height: 12px; color: var(--ink-900); margin-bottom: 2px; }
+  .card .crole { font-size: 10.5px; line-height: 13px; color: var(--ink-500); }
+  .card .cmodel { font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-300); }
+  .badge {
+    position: absolute; right: 6px; bottom: 6px; display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 7px 1px; font-size: 10.5px; background: var(--cream-100); color: var(--ink-900);
+  }
+  .badge .sq { width: 8px; height: 8px; box-shadow: inset 0 0 0 1px var(--ink-300); }
+  #btnNewAgentCard {
+    flex: 0 0 100px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+    background: transparent; border: none; box-shadow: var(--hairline); color: var(--ink-500);
+    font-family: var(--font-display); font-size: 8px; text-transform: uppercase;
+  }
+  #btnNewAgentCard:hover { background: var(--cream-100); color: var(--ink-900); }
+
+  /* ---------- modal ---------- */
+  #modalBackdrop { position: fixed; inset: 0; background: rgba(26, 19, 32, 0.6); display: flex; align-items: center; justify-content: center; z-index: 500; }
+  .modal { width: 470px; max-width: 94vw; max-height: 86vh; overflow-y: auto; background: var(--paper-100); box-shadow: var(--hairline), var(--shadow-hard); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .modal h2 { margin: 0 0 2px; font-family: var(--font-display); font-size: 10px; color: var(--ink-900); }
+  .modal label { display: flex; flex-direction: column; gap: 4px; }
+  .modal textarea { resize: vertical; min-height: 60px; }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">HQ<em>·</em>AGENTS</span>
+    <div class="tabs">
+      <button class="tab active" id="tabFloor">Floor</button>
+      <button class="tab" id="tabGraph">Graph</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="ticker" title="cache reads cost ~10% of fresh input tokens">
+      <span>cost <b id="tickCost">$0.0000</b></span>
+      <span>turns <b id="tickTurns">0</b></span>
+      <span>fresh <b id="tickTokens">0</b></span>
+      <span>cache <b id="tickCache">0</b></span>
+    </div>
+    <button class="btn" id="btnNewTask">+ new task</button>
+    <div class="conn" id="connDot" title="live connection"></div>
+  </header>
+
+  <main>
+    <div id="stage">
+      <canvas id="floorCanvas"></canvas>
+      <svg id="graphSvg" class="hidden"></svg>
+      <div id="floorHint">walk: arrows / wasd · click floor to travel · click anyone to open their panel</div>
+      <input id="sayInput" placeholder="say something to the office… (Enter)" maxlength="280" autocomplete="off">
+    </div>
+
+    <aside>
+      <div id="emptyState">
+        <span class="display">no one selected</span>
+        Click an agent to chat 1:1, tune their model, effort,<br>
+        or token budget — or click a teammate to see their<br>
+        live sessions and agents.
+      </div>
+      <div id="personPanel" class="hidden"></div>
+
+      <div id="chatHeader" class="hidden">
+        <div class="who">
+          <span id="portrait"></span>
+          <span>
+            <div id="chatName"></div>
+            <div id="chatRole"></div>
+          </span>
+        </div>
+        <div id="chatMeta">
+          <select id="chatModel" title="Change model (fresh conversation)"></select>
+          <select id="chatEffort" title="Reasoning effort — lower is cheaper"></select>
+          <select id="chatOwner" title="Which teammate owns this agent"></select>
+          <input type="text" id="chatBudget" placeholder="token budget" title="Lifetime token cap — mail is held once exhausted" style="width:104px">
+          <button class="btn" id="btnPersona">persona</button>
+          <button class="btn danger" id="btnFire">remove</button>
+        </div>
+      </div>
+      <div id="chatLog" class="hidden"></div>
+      <div id="chatInputRow" class="hidden">
+        <textarea id="chatInput" placeholder="Message…"></textarea>
+        <button class="btn primary" id="btnSend">send →</button>
+      </div>
+
+      <div class="section">
+        <div class="section-title"><span class="lbl">task board</span></div>
+        <div id="taskList"></div>
+      </div>
+      <div class="section">
+        <div class="section-title"><span class="lbl">claude usage</span><span class="lbl" id="usageNote"></span></div>
+        <table id="usageTable"></table>
+      </div>
+      <div class="section" style="flex:0 1 auto; min-height:0; display:flex; flex-direction:column;">
+        <div class="section-title"><span class="lbl">activity</span></div>
+        <div id="feed"></div>
+      </div>
+    </aside>
+  </main>
+
+  <div id="strip"></div>
+
+  <script src="office.js"></script>
+  <script src="graph.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
