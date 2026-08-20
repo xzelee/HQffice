@@ -20,6 +20,20 @@ const OfficeFloor = (() => {
   const HAIRS = ['#4a3527', '#1A1320', '#B0623C', '#DCAB3C', '#8a8f98'];
   const HAIR_STYLES = ['short', 'long', 'spiky', 'buzz'];
 
+  // village trees (visual + blocked tiles) — keep clear of buildings/roads
+  const TREES = [
+    [10, 17], [13, 26], [56, 18], [60, 25], [70, 5], [75, 9],
+    [10, 45], [30, 45], [50, 45], [74, 44],
+  ];
+  // paved roads (cosmetic tile rects [x0, y0, x1, y1]) — the grass is all
+  // walkable; roads just show the way between buildings
+  const ROADS = [
+    [4, 13, 76, 14],                        // north road, right under the house doors
+    [2, 31, 67, 31],                        // south road: HQ south door + workshop doors
+    [66, 14, 67, 36],                       // east avenue: shop / cafe doors
+    [3, 15, 4, 31],                         // west lane
+  ];
+
   let canvas, ctx, S, M;                 // M = S.map from the server
   let GRID_W = 46, GRID_H = 28, WORLD_W, WORLD_H;
   let walk = null;
@@ -48,34 +62,53 @@ const OfficeFloor = (() => {
     WORLD_W = GRID_W * TILE; WORLD_H = GRID_H * TILE;
     walk = Array.from({ length: GRID_H }, () => Array(GRID_W).fill(true));
     const block = (x, y) => { if (x >= 0 && y >= 0 && x < GRID_W && y < GRID_H) walk[y][x] = false; };
-    // perimeter
+    // village fence (map edge)
     for (let x = 0; x < GRID_W; x++) { block(x, 0); block(x, GRID_H - 1); }
     for (let y = 0; y < GRID_H; y++) { block(0, y); block(GRID_W - 1, y); }
-    walk[GRID_H - 1][M.entrance.x] = true; walk[GRID_H - 1][M.entrance.x + 1] = true;
-    // personal rooms: dividing walls + bottom wall with a door
+    // free-standing building: wall ring on x0/x1/y0/y1 + door openings
+    const ringBlock = (b, doors) => {
+      for (let x = b.x0; x <= b.x1; x++) { block(x, b.y0); block(x, b.y1); }
+      for (let y = b.y0; y <= b.y1; y++) { block(b.x0, y); block(b.x1, y); }
+      for (const [dx, dy] of doors) if (dy >= 0 && dy < GRID_H) walk[dy][dx] = true;
+    };
+    // houses (labs): south doors + desk furniture
     for (const r of M.rooms) {
-      for (let y = 1; y <= r.door.y; y++) block(r.x1 + 1, y);
-      for (let x = r.x0 - 1; x <= r.x1 + 1; x++) block(x, r.door.y);
-      walk[r.door.y][r.door.x] = true; walk[r.door.y][r.door.x + 1] = true;
-      block(r.ownerDesk.x, r.ownerDesk.y - 1);              // desk furniture
+      ringBlock(r, [[r.door.x, r.door.y], [r.door.x + 1, r.door.y]]);
+      block(r.ownerDesk.x, r.ownerDesk.y - 1);
       for (const d of r.agentDesks) block(d.x, d.y - 1);
     }
-    // meeting room walls + door + table
-    const m = M.meeting;
-    for (let x = m.x0; x <= m.x1; x++) { block(x, m.y0); block(x, m.y1); }
-    for (let y = m.y0; y <= m.y1; y++) { block(m.x0, y); block(m.x1, y); }
-    walk[m.door.y][m.x0] = true; walk[m.door.y + 1][m.x0] = true;
-    for (let x = m.table.x0; x <= m.table.x1; x++) for (let y = m.table.y0; y <= m.table.y1; y++) block(x, y);
-    // cafeteria fixtures
-    const c = M.cafe;
-    for (let y = c.y0; y <= c.y0 + 3; y++) block(c.x1, y);
-    block(c.x0 + 2, c.y0 + 3); block(c.x0 + 3, c.y0 + 3);
-    block(c.x0 + 2, c.y0 + 5); block(c.x0 + 3, c.y0 + 5);
-    // hot desks + front desk furniture
-    for (const d of M.hotDesks) block(d.x, d.y - 1);
+    // workshops (sub-agent bays): north doors + desk furniture
+    for (const b of M.bays) {
+      ringBlock(b, [[b.door.x, b.door.y], [b.door.x + 1, b.door.y]]);
+      for (const d of b.desks) block(d.x, d.y - 1);
+    }
+    // HQ hall: south + east doors, front desk, hot desks, rack + brain core
+    const hq = M.hq;
+    ringBlock(hq, [
+      [hq.doorS.x, hq.y1], [hq.doorS.x + 1, hq.y1],
+      [hq.x1, hq.doorE.y], [hq.x1, hq.doorE.y + 1],
+    ]);
     block(M.frontDesk.x, M.frontDesk.y - 1);
-    // plants + data archive (server rack + brain core)
-    block(2, GRID_H - 3); block(33, 9); block(35, 9);
+    for (const d of M.hotDesks) block(d.x, d.y - 1);
+    block(hq.rack.x, hq.rack.y); block(hq.core.x, hq.core.y);
+    // conference zone (inside the HQ hall, no walls): the boardroom table
+    // + the plants flanking the TV; chairs stay walkable so people can sit
+    const m = M.meeting;
+    for (let x = m.table.x0; x <= m.table.x1; x++) for (let y = m.table.y0; y <= m.table.y1; y++) block(x, y);
+    block(m.x0 + 1, hq.y1 - 1); block(m.x1 - 1, hq.y1 - 1);
+    // cafeteria: west door + counter column + tables
+    const c = M.cafe;
+    ringBlock(c, [[c.x0, c.door.y], [c.x0, c.door.y + 1]]);
+    for (let y = c.y0 + 1; y <= c.y0 + 4; y++) block(c.x1 - 1, y);
+    block(c.x0 + 3, c.y0 + 4); block(c.x0 + 4, c.y0 + 4);
+    block(c.x0 + 3, c.y0 + 7); block(c.x0 + 4, c.y0 + 7);
+    // skills shop: west door + counter
+    const s = M.shop;
+    ringBlock(s, [[s.x0, s.door.y], [s.x0, s.door.y + 1]]);
+    for (let x = s.counter.x0; x <= s.counter.x1; x++)
+      for (let y = s.counter.y0; y <= s.counter.y1; y++) block(x, y);
+    // trees
+    for (const [tx, ty] of TREES) block(tx, ty);
   }
 
   function walkable(x, y) { return x >= 0 && y >= 0 && x < GRID_W && y < GRID_H && walk[y][x]; }
@@ -180,6 +213,21 @@ const OfficeFloor = (() => {
     const deskT = agent.desk || M.entrance;
     const atDesk = Math.abs(c.x - feetX(deskT.x)) < 2 && Math.abs(c.y - feetY(deskT.y)) < 2;
 
+    // meeting called: EVERYONE to the conference table — each agent takes a
+    // deterministic seat (roster order) along the table's chairs
+    if (S.meetingCall?.active && M.meeting?.table) {
+      const t = M.meeting.table;
+      const seats = [];
+      for (let x = t.x0; x <= t.x1; x++) seats.push([x, t.y0 - 1], [x, t.y1 + 1]);
+      const [sx, sy] = seats[Math.max(0, S.agents.findIndex((a) => a.id === agent.id)) % seats.length];
+      const atSeat = Math.abs(c.x - feetX(sx)) < 2 && Math.abs(c.y - feetY(sy)) < 2;
+      if (!atSeat && c.path.length === 0) setDestination(c, sx, sy);
+      if (atSeat && !c.path.length) c.face = sy < t.y0 ? 'down' : 'up';
+      advance(c, dt, HUMAN_SPEED);
+      if (c.bubble && now - c.bubble.born > c.bubble.life) c.bubble = null;
+      return;
+    }
+
     if (busy) {
       if (!atDesk && c.path.length === 0) setDestination(c, deskT.x, deskT.y);
     } else {
@@ -244,10 +292,34 @@ const OfficeFloor = (() => {
   }
 
   // ------------------------------------------------------------- drawing
+  // camera state: manual = the user panned/zoomed, follow is paused until
+  // they move their character again; userZoom survives across both modes
+  const view = { zoom: 0, ox: 0, oy: 0, manual: false, userZoom: null };
+
   function camera() {
     const w = canvas.width / devicePixelRatio, h = canvas.height / devicePixelRatio;
-    const zoom = Math.min(w / WORLD_W, h / WORLD_H);
-    return { zoom, ox: (w - WORLD_W * zoom) / 2, oy: (h - WORLD_H * zoom) / 2 };
+    const fit = Math.min(w / WORLD_W, h / WORLD_H);
+    const clampPan = (vw, world, o) => world <= vw ? (vw - world) / 2 : Math.min(0, Math.max(vw - world, o));
+    if (view.manual) {
+      view.zoom = Math.max(Math.min(fit, 0.4), Math.min(4, view.zoom));
+      view.ox = clampPan(w, WORLD_W * view.zoom, view.ox);
+      view.oy = clampPan(h, WORLD_H * view.zoom, view.oy);
+      return view;
+    }
+    const c = me && crowd.get(me);
+    // world fits on screen (or spectator with no character): classic fit-all
+    if (fit >= 1.05 || !c) {
+      Object.assign(view, { zoom: fit, ox: (w - WORLD_W * fit) / 2, oy: (h - WORLD_H * fit) / 2 });
+      return view;
+    }
+    // big map: follow your character at a readable zoom, clamped to bounds
+    const zoom = Math.max(1, Math.min(3, view.userZoom || 1.6));
+    Object.assign(view, {
+      zoom,
+      ox: clampPan(w, WORLD_W * zoom, w / 2 - c.x * zoom),
+      oy: clampPan(h, WORLD_H * zoom, h / 2 - c.y * zoom),
+    });
+    return view;
   }
 
   function roomTint(i) {
@@ -257,25 +329,43 @@ const OfficeFloor = (() => {
   }
 
   function drawMap(now) {
-    // base floor — cool lab tile
+    // the village: grass everywhere, buildings paint their own floors
     for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) {
-      ctx.fillStyle = (x + y) % 2 ? '#E9ECEF' : '#E1E5EA';
+      ctx.fillStyle = (x + y) % 2 ? '#93BC85' : '#8AB37B';
       ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
     }
-    // room floors (personal lab bays)
+    // paved roads between buildings
+    ctx.fillStyle = '#C6CBD2';
+    for (const [rx0, ry0, rx1, ry1] of ROADS)
+      ctx.fillRect(rx0 * TILE, ry0 * TILE, (rx1 - rx0 + 1) * TILE, (ry1 - ry0 + 1) * TILE);
+    // house (lab) floors
     for (const r of M.rooms) {
-      for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) {
+      for (let y = r.y0 + 1; y < r.y1; y++) for (let x = r.x0 + 1; x < r.x1; x++) {
         ctx.fillStyle = (x + y) % 2 ? roomTint(r.index) : shade(roomTint(r.index));
         ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
       }
     }
-    // meeting room = mission control (dark slate) + cafeteria floors
-    const m = M.meeting, cf = M.cafe;
-    for (let y = m.y0 + 1; y < m.y1; y++) for (let x = m.x0 + 1; x < m.x1; x++) {
-      ctx.fillStyle = (x + y) % 2 ? '#3E4652' : '#39404B';
+    // workshop (bay) floors — tinted like the owner's house
+    for (const b of M.bays) {
+      for (let y = b.y0 + 1; y < b.y1; y++) for (let x = b.x0 + 1; x < b.x1; x++) {
+        ctx.fillStyle = (x + y) % 2 ? roomTint(b.index) : shade(roomTint(b.index));
+        ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
+      }
+    }
+    // HQ hall floor (cool lab tile)
+    const hq = M.hq;
+    for (let y = hq.y0 + 1; y < hq.y1; y++) for (let x = hq.x0 + 1; x < hq.x1; x++) {
+      ctx.fillStyle = (x + y) % 2 ? '#E9ECEF' : '#E1E5EA';
       ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
     }
-    for (let y = cf.y0; y <= cf.y1; y++) for (let x = cf.x0; x <= cf.x1; x++) {
+    // conference zone tint (inside the HQ hall) + cafeteria floor
+    const m = M.meeting, cf = M.cafe;
+    for (let y = Math.max(m.y0 + 1, hq.y0 + 1); y < Math.min(m.y1, hq.y1); y++)
+      for (let x = Math.max(m.x0 + 1, hq.x0 + 1); x < Math.min(m.x1, hq.x1); x++) {
+        ctx.fillStyle = (x + y) % 2 ? '#DDE3EB' : '#D5DCE5';
+        ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
+      }
+    for (let y = cf.y0 + 1; y < cf.y1; y++) for (let x = cf.x0 + 1; x < cf.x1; x++) {
       ctx.fillStyle = (x + y) % 2 ? '#EAE5DA' : '#E3DDD0';
       ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
     }
@@ -287,22 +377,22 @@ const OfficeFloor = (() => {
         ctx.fillStyle = '#47525E'; ctx.fillRect(x * TILE, y * TILE + TILE - 4, TILE, 4);
       }
     }
-    // space windows on the top wall above each lab bay
+    // space windows on each house's north wall
     for (const r of M.rooms) {
       const wx = Math.floor((r.x0 + r.x1) / 2) - 1;
       for (let i = 0; i < 2; i++) {
-        const x = (wx + i) * TILE;
-        ctx.fillStyle = '#0E1B33'; ctx.fillRect(x + 2, 3, TILE - 4, 10);
+        const x = (wx + i) * TILE, wy = r.y0 * TILE;
+        ctx.fillStyle = '#0E1B33'; ctx.fillRect(x + 2, wy + 3, TILE - 4, 10);
         ctx.fillStyle = 'rgba(234,242,255,0.9)';
-        ctx.fillRect(x + 5, 6, 1, 1); ctx.fillRect(x + 9, 10, 1, 1); ctx.fillRect(x + 11, 5, 1, 1);
+        ctx.fillRect(x + 5, wy + 6, 1, 1); ctx.fillRect(x + 9, wy + 10, 1, 1); ctx.fillRect(x + 11, wy + 5, 1, 1);
       }
     }
-    // entrance — caution-striped airlock mat
-    const ex = M.entrance.x * TILE, ey = (GRID_H - 1) * TILE;
+    // welcome mat at the spawn point (HQ's south door)
+    const ex = M.entrance.x * TILE, ey = M.entrance.y * TILE;
     ctx.fillStyle = '#D9B23C'; ctx.fillRect(ex, ey, TILE * 2, TILE);
     ctx.fillStyle = '#2B2F36';
     for (let i = 0; i < 4; i++) ctx.fillRect(ex + 2 + i * 8, ey + 2, 4, TILE - 4);
-    // mission control: console table with glowing rim + live blips
+    // conference smart table: glowing rim + live blips
     const tx0 = m.table.x0 * TILE, ty0 = m.table.y0 * TILE;
     const tw = (m.table.x1 - m.table.x0 + 1) * TILE, th = (m.table.y1 - m.table.y0 + 1) * TILE;
     drawTable(tx0, ty0, tw, th, '#2E3640');
@@ -313,14 +403,44 @@ const OfficeFloor = (() => {
       ctx.fillStyle = on ? '#6ECDE1' : '#465361';
       ctx.fillRect(tx0 + 6 + i * 9, ty0 + 6, 4, 3);
     }
-    // telemetry wall screen across the mission-control top wall
-    const sx0 = (m.x0 + 1) * TILE, sw = (m.x1 - m.x0 - 1) * TILE;
-    ctx.fillStyle = '#0B1118'; ctx.fillRect(sx0 + 2, m.y0 * TILE + 2, sw - 4, 12);
-    for (let i = 0; i < Math.floor((sw - 10) / 5); i++) {
-      const hgt = 2 + 6 * Math.abs(Math.sin(now / 700 + i * 0.9));
-      ctx.fillStyle = 'rgba(110,205,225,0.85)';
-      ctx.fillRect(sx0 + 5 + i * 5, m.y0 * TILE + 13 - hgt, 3, hgt);
+    // boardroom dressing: chairs along the top + bottom of the landscape
+    // table, head chairs at both ends
+    const t = m.table;
+    for (let x = t.x0; x <= t.x1; x++) { drawChair(x, t.y0 - 1, 'down'); drawChair(x, t.y1 + 1, 'up'); }
+    const tmy = Math.floor((t.y0 + t.y1) / 2);
+    drawChair(t.x0 - 1, tmy, 'right'); drawChair(t.x1 + 1, tmy, 'left');
+    // pendant light pools along the table
+    const lcy = ((t.y0 + t.y1 + 1) / 2) * TILE;
+    for (const fx of [0.3, 0.7]) {
+      const lx = (t.x0 + (t.x1 - t.x0 + 1) * fx) * TILE;
+      ctx.fillStyle = 'rgba(255,252,235,0.12)';
+      ctx.beginPath(); ctx.arc(lx, lcy, 20, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,252,235,0.85)'; ctx.fillRect(lx - 1.5, lcy - 1.5, 3, 3);
     }
+    // plants flanking the TV + framed art on the walls
+    drawPlant((m.x0 + 1) * TILE + 8, (hq.y1 - 1) * TILE + 14);
+    drawPlant((m.x1 - 1) * TILE + 8, (hq.y1 - 1) * TILE + 14);
+    drawFrame(m.x0 - 1, hq.y1, '#D96A62'); drawFrame(m.x1 + 1, hq.y1, '#9482D3');
+    drawFrame(hq.x1, m.y0 + 2, '#4E9E74'); drawFrame(hq.x1, m.y0 + 6, '#DCAB3C');
+    // wall TV on the HQ south wall at the head of the table — WIRED to the
+    // shared blackboard: a scrolling ticker of the latest pinned note +
+    // live task counts. Click it to open the full billboard.
+    const sx0 = (t.x0 - 1) * TILE, sw = (t.x1 - t.x0 + 3) * TILE;
+    ctx.fillStyle = '#0B1118'; ctx.fillRect(sx0 + 2, hq.y1 * TILE + 2, sw - 4, 12);
+    const bbLines = String(S.blackboard || '').trim().split('\n').filter((l) => l.trim());
+    const tc = { inbox: 0, in_progress: 0, review: 0, done: 0 };
+    for (const t of S.tasks) if (tc[t.status] != null) tc[t.status]++;
+    const ticker = (bbLines.length ? bbLines[bbLines.length - 1].trim().slice(0, 160) + '   ···   ' : '')
+      + `tasks: ${tc.inbox} inbox · ${tc.in_progress} doing · ${tc.review} review · ${tc.done} done`;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(sx0 + 4, hq.y1 * TILE + 3, sw - 8, 10); ctx.clip();
+    ctx.font = '5px monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(110,205,225,0.95)';
+    const tkw = ctx.measureText(ticker).width + 60;
+    const off = (now / 45) % tkw;
+    ctx.fillText(ticker, sx0 + 4 + (sw - 8) - off, hq.y1 * TILE + 10);
+    ctx.fillText(ticker, sx0 + 4 + (sw - 8) - off + tkw, hq.y1 * TILE + 10);
+    ctx.restore();
     const meeters = S.people.filter((p) => p.online && p.pos && inMeeting(p.pos.x, p.pos.y));
     if (meeters.length >= 2) {
       const glow = 0.18 + 0.12 * Math.sin(now / 300);
@@ -328,29 +448,55 @@ const OfficeFloor = (() => {
       ctx.fillRect((m.x0 + 1) * TILE, (m.y0 + 1) * TILE, (m.x1 - m.x0 - 1) * TILE, (m.y1 - m.y0 - 1) * TILE);
       pixelLabel('● BRIEFING IN PROGRESS', m.x0 * TILE + 10, m.y0 * TILE - 4, '#E58A80');
     }
-    pixelLabel('MISSION CONTROL', m.x0 * TILE + 12, (m.y0 + 1) * TILE + 8, 'rgba(190,215,230,0.6)');
-    pixelLabel('CAFETERIA', cf.x0 * TILE + 4, cf.y0 * TILE + 10);
-    // cafeteria fixtures — steel counter + vending machine
-    ctx.fillStyle = '#9AA5B1'; ctx.fillRect(cf.x1 * TILE, cf.y0 * TILE, TILE, 4 * TILE);
-    ctx.fillStyle = '#1C232B'; ctx.fillRect(cf.x1 * TILE + 3, cf.y0 * TILE + 3, 10, 8);
-    ctx.fillStyle = '#E5867E'; ctx.fillRect(cf.x1 * TILE + 5, cf.y0 * TILE + 5, 3, 3);
-    drawTable((cf.x0 + 2) * TILE, (cf.y0 + 3) * TILE, TILE * 2, TILE);
-    drawTable((cf.x0 + 2) * TILE, (cf.y0 + 5) * TILE, TILE * 2, TILE);
-    // rooms: labels + desks
+    pixelLabel(m.label || 'CONFERENCE', m.x0 * TILE + 12, (m.y0 + 1) * TILE + 8, 'rgba(90,105,125,0.75)');
+    pixelLabel('CAFETERIA', (cf.x0 + 1) * TILE + 2, (cf.y0 + 1) * TILE + 8);
+    pixelLabel(hq.label || 'HQ HALL', (hq.x0 + 1) * TILE + 2, (hq.y0 + 1) * TILE + 8);
+    // skills shop (east wing): lilac floor, crate shelves, counter + register
+    if (M.shop) {
+      const sp = M.shop;
+      for (let y = sp.y0 + 1; y < sp.y1; y++) for (let x = sp.x0 + 1; x < sp.x1; x++) {
+        ctx.fillStyle = (x + y) % 2 ? '#E6E3F0' : '#DFDBEA';
+        ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
+      }
+      const CRATES = ['#D96A62', '#4F9FAF', '#9482D3'];   // claude / openclaw / hermes
+      for (let i = 0; i < sp.x1 - sp.x0 - 1; i++) {
+        const x = (sp.x0 + 1 + i) * TILE;
+        ctx.fillStyle = '#3A4149'; ctx.fillRect(x + 2, sp.y0 * TILE + 5, TILE - 4, 9);
+        ctx.fillStyle = CRATES[i % 3]; ctx.fillRect(x + 4, sp.y0 * TILE + 7, TILE - 8, 5);
+      }
+      drawTable(sp.counter.x0 * TILE, sp.counter.y0 * TILE, (sp.counter.x1 - sp.counter.x0 + 1) * TILE, TILE);
+      ctx.fillStyle = '#1C232B'; ctx.fillRect(sp.counter.x0 * TILE + 3, sp.counter.y0 * TILE - 4, 8, 8);
+      ctx.fillStyle = `rgba(148,130,211,${0.55 + 0.3 * Math.sin(now / 500)})`;
+      ctx.fillRect(sp.counter.x0 * TILE + 5, sp.counter.y0 * TILE - 2, 4, 4);
+      pixelLabel(sp.label, sp.x0 * TILE + 12, (sp.y0 + 1) * TILE + 8, 'rgba(120,105,170,0.8)');
+    }
+    // cafeteria fixtures — steel counter + vending machine (inside the walls)
+    ctx.fillStyle = '#9AA5B1'; ctx.fillRect((cf.x1 - 1) * TILE, (cf.y0 + 1) * TILE, TILE, 4 * TILE);
+    ctx.fillStyle = '#1C232B'; ctx.fillRect((cf.x1 - 1) * TILE + 3, (cf.y0 + 1) * TILE + 3, 10, 8);
+    ctx.fillStyle = '#E5867E'; ctx.fillRect((cf.x1 - 1) * TILE + 5, (cf.y0 + 1) * TILE + 5, 3, 3);
+    drawTable((cf.x0 + 3) * TILE, (cf.y0 + 4) * TILE, TILE * 2, TILE);
+    drawTable((cf.x0 + 3) * TILE, (cf.y0 + 7) * TILE, TILE * 2, TILE);
+    // houses: labels + desks
     for (const r of M.rooms) {
       const owner = S.people.find((p) => p.roomIndex === r.index);
-      pixelLabel(owner ? `${owner.name.toUpperCase()}'S LAB` : `LAB ${r.index + 1}`, r.x0 * TILE + 3, r.y0 * TILE + 10);
+      pixelLabel(owner ? `${owner.name.toUpperCase()}'S LAB` : `LAB ${r.index + 1}`, (r.x0 + 1) * TILE + 2, (r.y0 + 1) * TILE + 8);
       drawDesk(r.ownerDesk, owner ? (owner.sessions?.length > 0) : false, now, true);
       for (const d of r.agentDesks) if (deskOwnerAgent(d)) drawDesk(d, deskBusy(d), now);
+    }
+    // workshops: per-owner labels + all benches (furnished while empty)
+    for (const b of M.bays) {
+      const owner = S.people.find((p) => p.roomIndex === b.index);
+      pixelLabel(owner ? `${owner.name.toUpperCase()}'S BAY` : `BAY ${b.index + 1}`, (b.x0 + 1) * TILE + 2, (b.y0 + 1) * TILE + 8);
+      for (const d of b.desks) drawDesk(d, deskBusy(d), now);
     }
     // hot desks (only where an agent sits) + front desk
     for (const d of M.hotDesks) if (deskOwnerAgent(d)) drawDesk(d, deskBusy(d), now);
     drawDesk(M.frontDesk, deskBusy(M.frontDesk), now);
     pixelLabel('FRONT DESK', M.frontDesk.x * TILE - 10, (M.frontDesk.y - 1) * TILE - 3);
-    // greenery + data archive: server rack + the project brain core
-    drawPlant(2 * TILE + 8, (GRID_H - 3) * TILE + 14);
-    drawRack(33, 9, now);
-    drawBrainCore(35, 9, now);
+    // trees + data archive: server rack + the project brain core (in HQ)
+    for (const [tx, ty] of TREES) drawTree(tx, ty);
+    drawRack(hq.rack.x, hq.rack.y, now);
+    drawBrainCore(hq.core.x, hq.core.y, now);
   }
 
   function shade(hex) {
@@ -362,13 +508,16 @@ const OfficeFloor = (() => {
     // walls are blocked tiles that aren't furniture (furniture drawn separately)
     if (y === 0 || y === GRID_H - 1 || x === 0 || x === GRID_W - 1) return true;
     for (const r of M.rooms) {
-      if (x === r.x1 + 1 && y <= r.door.y) return true;
-      if (y === r.door.y && x >= r.x0 - 1 && x <= r.x1 + 1) return true;
+      if (ringB(r)) return true;
     }
-    const m = M.meeting;
-    if ((y === m.y0 || y === m.y1) && x >= m.x0 && x <= m.x1) return true;
-    if ((x === m.x0 || x === m.x1) && y >= m.y0 && y <= m.y1) return true;
+    for (const b of M.bays) if (ringB(b)) return true;
+    for (const b of [M.hq, M.cafe, M.shop]) if (ringB(b)) return true;
     return false;
+
+    function ringB(b) {
+      return ((y === b.y0 || y === b.y1) && x >= b.x0 && x <= b.x1)
+        || ((x === b.x0 || x === b.x1) && y >= b.y0 && y <= b.y1);
+    }
   }
 
   function deskOwnerAgent(d) { return S.agents.find((a) => a.desk && a.desk.x === d.x && a.desk.y === d.y); }
@@ -407,6 +556,29 @@ const OfficeFloor = (() => {
     ctx.fillStyle = '#8D97A3'; ctx.fillRect(x - 3, y - 3, 6, 4);
     ctx.fillStyle = '#5CA97A';
     ctx.fillRect(x - 1, y - 9, 2, 6); ctx.fillRect(x - 4, y - 7, 3, 2); ctx.fillRect(x + 1, y - 8, 3, 2);
+  }
+  function drawChair(tx, ty, face) {
+    // boardroom chair: seat + backrest on the side away from the table
+    const x = tx * TILE + 8, y = ty * TILE + 8;
+    ctx.fillStyle = '#9AA3B0'; ctx.fillRect(x - 4, y - 4, 8, 8);
+    ctx.strokeStyle = 'rgba(30,40,52,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(x - 4.5, y - 4.5, 9, 9);
+    ctx.fillStyle = '#78818E';
+    if (face === 'right') ctx.fillRect(x - 6.5, y - 5, 2.5, 10);
+    else if (face === 'left') ctx.fillRect(x + 4, y - 5, 2.5, 10);
+    else if (face === 'up') ctx.fillRect(x - 5, y + 4, 10, 2.5);
+    else ctx.fillRect(x - 5, y - 6.5, 10, 2.5);
+  }
+  function drawFrame(tx, ty, color) {
+    // framed art hung on a wall tile
+    const x = tx * TILE, y = ty * TILE;
+    ctx.fillStyle = '#2B333D'; ctx.fillRect(x + 4, y + 3, 8, 9);
+    ctx.fillStyle = color; ctx.fillRect(x + 5.5, y + 4.5, 5, 6);
+  }
+  function drawTree(tx, ty) {
+    const x = tx * TILE + 8, y = ty * TILE + 14;
+    ctx.fillStyle = '#7A5A3A'; ctx.fillRect(x - 2, y - 6, 4, 8);
+    ctx.fillStyle = '#5CA97A'; ctx.fillRect(x - 7, y - 16, 14, 10);
+    ctx.fillStyle = '#4E9268'; ctx.fillRect(x - 5, y - 18, 10, 4);
   }
   function drawBrainCore(tx, ty, now) {
     // the project brain, physically in the office: a pulsing core on a
@@ -604,15 +776,59 @@ const OfficeFloor = (() => {
     fit();
     new ResizeObserver(fit).observe(canvas);
 
+    // pan (drag) + zoom (wheel); a drag suppresses the click that follows it
+    let dragState = null, suppressClick = false;
+    canvas.addEventListener('wheel', (ev) => {
+      ev.preventDefault();
+      const r = canvas.getBoundingClientRect();
+      const cam = camera();
+      const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+      const wx = (mx - cam.ox) / cam.zoom, wy = (my - cam.oy) / cam.zoom;
+      const nz = Math.max(0.35, Math.min(4, cam.zoom * (ev.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      Object.assign(view, { zoom: nz, ox: mx - wx * nz, oy: my - wy * nz, manual: true, userZoom: nz });
+    }, { passive: false });
+    canvas.addEventListener('mousedown', (ev) => {
+      const cam = camera();
+      dragState = { x: ev.clientX, y: ev.clientY, ox: cam.ox, oy: cam.oy, zoom: cam.zoom, moved: false };
+    });
+    window.addEventListener('mousemove', (ev) => {
+      if (!dragState) return;
+      const dx = ev.clientX - dragState.x, dy = ev.clientY - dragState.y;
+      if (Math.abs(dx) + Math.abs(dy) > 5) dragState.moved = true;
+      if (dragState.moved) Object.assign(view, { zoom: dragState.zoom, ox: dragState.ox + dx, oy: dragState.oy + dy, manual: true });
+    });
+    window.addEventListener('mouseup', () => {
+      if (dragState?.moved) suppressClick = true;
+      dragState = null;
+    });
+
     canvas.addEventListener('click', (ev) => {
+      if (suppressClick) { suppressClick = false; return; }   // that was a pan
       const r = canvas.getBoundingClientRect();
       const cam = camera();
       const wx = (ev.clientX - r.left - cam.ox) / cam.zoom;
       const wy = (ev.clientY - r.top - cam.oy) / cam.zoom;
-      // brain core terminal (fixed at tile 35,9 beside the server rack)
-      if (Math.hypot(wx - (35 * TILE + 8), wy - (9 * TILE + 2)) < 14) {
+      // brain core terminal (in the HQ hall, beside the server rack)
+      if (M.hq && Math.hypot(wx - (M.hq.core.x * TILE + 8), wy - (M.hq.core.y * TILE + 2)) < 14) {
         window.openBrain?.();
         return;
+      }
+      // hall billboard (the wall TV under the conference zone)
+      if (M.hq && M.meeting) {
+        const bx0 = (M.meeting.x0 + 1) * TILE, bx1 = Math.min(M.meeting.x1, M.hq.x1) * TILE;
+        if (wx >= bx0 && wx <= bx1 && wy >= M.hq.y1 * TILE - 2 && wy <= (M.hq.y1 + 1) * TILE + 2) {
+          window.openBillboard?.();
+          return;
+        }
+      }
+      // skills shop counter
+      if (M.shop) {
+        const sp = M.shop.counter;
+        if (wx >= sp.x0 * TILE - 4 && wx <= (sp.x1 + 1) * TILE + 4
+          && wy >= sp.y0 * TILE - 10 && wy <= (sp.y1 + 1) * TILE + 4) {
+          window.openShop?.();
+          return;
+        }
       }
       // nearest agent or person within reach
       let best = null, bestD = 20, bestKind = null;
@@ -632,7 +848,11 @@ const OfficeFloor = (() => {
         // click-to-walk (Gather style)
         const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
         const c = crowd.get(me);
-        if (c && walkable(tx, ty)) { const cur = tileOf(c); const p = findPath(cur.x, cur.y, tx, ty); if (p) c.path = p.map(([x, y]) => ({ x: feetX(x), y: feetY(y) })); }
+        if (c && walkable(tx, ty)) {
+          const cur = tileOf(c);
+          const p = findPath(cur.x, cur.y, tx, ty);
+          if (p) { c.path = p.map(([x, y]) => ({ x: feetX(x), y: feetY(y) })); view.manual = false; }
+        }
         window.selectAgent(null);
       } else window.selectAgent(null);
     });
@@ -641,6 +861,7 @@ const OfficeFloor = (() => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'w', 'a', 's', 'd'].includes(e.key)) {
         keys.add(e.key);
+        view.manual = false;   // moving resumes the follow-camera
         e.preventDefault();
       }
     });

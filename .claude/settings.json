@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/hq/HQffice/docs/agent-sync/channel_hook.py\" deliver",
+            "timeout": 20,
+            "statusMessage": "Checking HQffice dev channel..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/hq/HQffice/docs/agent-sync/channel_hook.py\" deliver",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/hq/HQffice/docs/agent-sync/channel_hook.py\" remind",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

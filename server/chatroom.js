@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { emit } from './eventlog.js';
-import { listAgents } from './store.js';
+import { listAgents, listPeople } from './store.js';
 import { sendMessage } from './router.js';
 
 const KEEP = 500;                 // in-memory window; the jsonl keeps everything
@@ -64,14 +64,28 @@ export function parseMentions(body, exceptId = null) {
 }
 
 // from: agent id, person id, or 'user'. fromKind: 'agent' | 'person' | 'user'.
+// "@name" of a PERSON (lee, juls, …) — tracked as an ask for that human,
+// never a wake (humans read the room through their bridge/browser).
+export function parsePersonMentions(body) {
+  const found = new Set();
+  for (const [, token] of authoritative(body).matchAll(/@([\w-]+)/g)) {
+    const t = token.toLowerCase();
+    const person = listPeople().find((p) => p.name.toLowerCase() === t);
+    if (person) found.add(person.id);
+  }
+  return [...found];
+}
+
 export function postChat({ from, fromKind, name, body, hops = 0, replyTo = null }) {
   const mentions = parseMentions(body, fromKind === 'agent' ? from : null);
+  const personMentions = parsePersonMentions(body).filter((id) => id !== from);
   const ts = Date.now();
   const msg = {
     id: hashId(ts, from, body),
     from, fromKind, name,
     body: String(body).slice(0, 2000),
     mentions,
+    personMentions,
     replyTo: replyTo ? String(replyTo).trim().toLowerCase().replace(/^\[|\]$/g, '') : null,
     ts,
   };
@@ -118,9 +132,10 @@ export function chatDerived() {
 
   const openAsks = [];
   for (const m of messages) {
-    if (!m.mentions?.length) continue;
+    const all = [...(m.mentions || []), ...(m.personMentions || [])];
+    if (!all.length) continue;
     const rs = replies.get(m.id) || [];
-    const waitingOn = m.mentions.filter((a) => !rs.some((r) => r.from === a));
+    const waitingOn = all.filter((x) => !rs.some((r) => r.from === x));
     if (waitingOn.length) openAsks.push({ id: m.id, from: m.from, by: m.name, body: m.body.slice(0, 140), waitingOn, ts: m.ts });
   }
 

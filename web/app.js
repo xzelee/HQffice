@@ -45,6 +45,9 @@ async function boot() {
   S.chatroom = data.chat || [];
   S.schedulerPaused = !!data.schedulerPaused;
   S.brain = data.brain || null;
+  S.blackboard = data.blackboard || '';
+  S.meetingCall = data.meetingCall || null;
+  renderMeetingBtn();
   S.events = data.events || [];
   rebuildChatsFromEvents(S.events);
 
@@ -135,6 +138,15 @@ function handleEvent(ev) {
       break;
     }
     case 'usage': S.usage = ev.totals; renderUsage(); break;
+    case 'meeting_call':
+      S.meetingCall = ev.active ? { active: true, name: ev.name } : null;
+      renderMeetingBtn();
+      break;
+    case 'blackboard_updated':
+      fetch('/api/blackboard').then((r) => r.json())
+        .then((j) => { S.blackboard = j.blackboard || ''; window.renderBillboard?.(); })
+        .catch(() => { });
+      break;
     case 'subagent_spawned': OfficeFloor.onSpawn(ev.agentId); break;
     // --- people ---
     case 'person_joined': S.people.push(ev.person); OfficeFloor.onRosterChange(); break;
@@ -225,18 +237,21 @@ function nameOfPerson(id) { return S.people.find((p) => p.id === id)?.name || 's
 function renderAll() { renderStrip(); renderTasks(); renderUsage(); renderFeedAll(); }
 
 function renderStrip() {
-  const cards = S.agents.map((a) => `
-    <button class="card ${S.selected === a.id ? 'selected' : ''}" data-id="${a.id}" title="${esc(a.statusDetail || a.role)}">
+  // Per-viewer strip (Stan's ask): shared/office agents + YOUR OWN squad.
+  // Everyone still sees everyone on the floor — the strip is "my agents".
+  const mine = S.agents.filter((a) => !a.ownerId || a.ownerId === S.me || a.isOrchestrator);
+  const cards = mine.map((a) => `
+    <button class="card ${S.selected === a.id ? 'selected' : ''}" data-id="${a.id}" title="${esc(a.statusDetail || a.role)}${a.external ? ' — external session (never billed here)' : ''}">
       <span class="portrait" style="background:${lightOf(a.color)}">${esc(a.avatar || '🙂')}</span>
       <span style="min-width:0">
         <div class="cname">${esc(a.name)}${a.isOrchestrator ? ' ★' : ''}</div>
         <div class="crole">${esc(a.role)}</div>
-        <div class="cmodel">${esc(a.model)}${a.ownerId ? ` · ${esc(nameOfPerson(a.ownerId))}` : ''}</div>
+        <div class="cmodel">${a.external ? 'external' : esc(a.model)}${a.ownerId ? ` · ${esc(nameOfPerson(a.ownerId))}` : ''}</div>
       </span>
-      <span class="badge"><span class="sq" style="background:${STATUS_COLOR[a.status] || '#A199AB'}"></span>${STATUS_LABEL[a.status] || a.status}</span>
+      <span class="badge"><span class="sq" style="background:${a.external ? (a.status === 'online' ? 'var(--mint)' : 'var(--text-4)') : (STATUS_COLOR[a.status] || '#A199AB')}"></span>${STATUS_LABEL[a.status] || a.status}</span>
     </button>`).join('');
   $('strip').innerHTML = cards + `<button id="btnNewAgentCard">+ hire<br>agent</button>`;
-  for (const card of document.querySelectorAll('.card')) card.onclick = () => selectAgent(card.dataset.id);
+  for (const card of document.querySelectorAll('.card')) card.onclick = () => window.selectAgent(card.dataset.id);
   $('btnNewAgentCard').onclick = openHireModal;
 }
 function lightOf(hex) {
@@ -296,6 +311,10 @@ const FEED_LABELS = {
   scheduler_paused: () => `⏸ turn scheduler PAUSED — agent mail is held`,
   scheduler_resumed: () => `▶ turn scheduler resumed`,
   brain_configured: (e) => `🧠 project brain ${e.brain ? `set: <b>${esc(e.brain.name)}</b> (${Object.keys(e.brain.roots).join(', ')})` : 'cleared'} — agent sessions restart fresh`,
+  skill_purchased: (e) => `🛒 <b>${esc(e.name)}</b> bought the <b>${esc(e.skillId)}</b> skill at the Skills Shop`,
+  meeting_call: (e) => e.active
+    ? `📣 <b>${esc(e.name)}</b> called a meeting — everyone to the conference table!`
+    : `📣 meeting adjourned`,
 };
 function feedLineHTML(ev) {
   const fn = FEED_LABELS[ev.type];
@@ -565,6 +584,16 @@ function openHireModal() {
   }
 }
 
+function renderMeetingBtn() {
+  $('btnMeeting').textContent = S.meetingCall?.active ? '📣 adjourn' : '📣 meeting';
+}
+$('btnMeeting').onclick = async () => {
+  await fetch('/api/meeting', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active: !S.meetingCall?.active, personId: S.me || null }),
+  }).catch(() => { });
+};
+
 $('btnNewTask').onclick = () => {
   openModal('NEW TASK — LANDS ON THE COORDINATOR\'S DESK', [
     { key: 'title', label: 'title', value: '' },
@@ -755,8 +784,9 @@ function deriveRoomMeta() {
   const openAsks = [], promises = [], decisions = [], blockers = [];
   for (const m of S.chatroom) {
     const rs = replies.get(m.id) || [];
-    if (m.mentions?.length) {
-      const waitingOn = m.mentions.filter((a) => !rs.some((r) => r.from === a));
+    const allMentions = [...(m.mentions || []), ...(m.personMentions || [])];
+    if (allMentions.length) {
+      const waitingOn = allMentions.filter((x) => !rs.some((r) => r.from === x));
       if (waitingOn.length) openAsks.push({ ...m, waitingOn });
     }
     const auth = chatAuthoritative(m.body);
@@ -824,7 +854,7 @@ function renderRoomSide() {
   if (openAsks.length) {
     for (const a of openAsks.slice(-6)) {
       parts.push(`<div class="rs-card">
-        <div class="meta"><span style="color:${chatColorOf(a)}; font-weight:600">${esc(chatNameOf(a))}</span><span>→ waiting on ${esc(a.waitingOn.map((id) => nameOf(id)).join(', '))}</span><span>${agoStr(a.ts)}</span></div>
+        <div class="meta"><span style="color:${chatColorOf(a)}; font-weight:600">${esc(chatNameOf(a))}</span><span>→ waiting on ${esc(a.waitingOn.map((id) => { const p = S.people.find((q) => q.id === id); return p ? p.name + ' (human)' : nameOf(id); }).join(', '))}</span><span>${agoStr(a.ts)}</span></div>
         <div class="txt" title="${esc(a.body)}">${esc(a.body.slice(0, 150))}</div></div>`);
     }
     parts.push('<div class="rs-empty">an ask closes only when the mentioned agent replies in-thread</div>');
@@ -871,37 +901,90 @@ window.decideChat = async (id, verdict) => {
   });
 };
 
+function chatAvatarColor(m) {
+  if (m.fromKind === 'agent') return S.agents.find((a) => a.id === m.from)?.color || '#8E90A0';
+  if (m.fromKind === 'person') return S.people.find((p) => p.id === m.from)?.appearance?.shirt || '#4E93A6';
+  return '#8E90A0';
+}
+// Display-side cleanup: strip mojibake left by badly-encoded posts (U+FFFD
+// replacement chars, and the "?? " that a lost 📣 turned into).
+function cleanChatBody(s) {
+  let t = String(s ?? '').replace(/�/g, '').trim();
+  if (t.startsWith('?? ')) t = '📣 ' + t.slice(3);
+  return t;
+}
+
 function renderRoom() {
   const log = $('roomLog');
-  const rows = [];
+  const filter = S.chatFilter || 'all';
+  // Fold the flat stream into day separators, compact sync-feed lines, and
+  // same-sender message groups (5-minute window) so the room reads like a
+  // conversation instead of a log.
+  const items = [];
   let lastDay = '';
   for (const m of S.chatroom) {
+    const sync = m.from === 'alex-sync';
+    if (filter === 'talk' && sync) continue;
+    if (filter === 'sync' && !sync) continue;
     const day = new Date(m.ts).toDateString();
     if (day !== lastDay) {
       lastDay = day;
-      rows.push(`<div class="day">— ${day === new Date().toDateString() ? 'today' : esc(day)} —</div>`);
+      items.push({ type: 'day', label: day === new Date().toDateString() ? 'today' : day });
     }
-    const agent = m.fromKind === 'agent' ? S.agents.find((a) => a.id === m.from) : null;
-    const mine = m.from === S.me || (m.fromKind === 'user' && !S.me);
-    const who = agent ? agent.name : m.name;
-    const kind = m.fromKind === 'agent' ? (agent ? agent.role : 'agent') : (m.fromKind === 'person' ? 'teammate' : 'human');
-    const color = agent ? agent.color : 'var(--ink-700)';
-    const time = new Date(m.ts).toTimeString().slice(0, 8);
-    const parent = m.replyTo ? chatMsgById(m.replyTo) : null;
-    rows.push(`<div class="cmsg ${mine ? 'mine' : ''}" style="border-left-color:${agent ? agent.color : mine ? 'var(--sky)' : 'var(--ink-100)'}">
-      <div class="chead">
-        <span class="cwho" style="color:${color}">${esc(who)}</span><span class="ckind">${esc(kind)}</span><span class="cid">[${esc(m.id)}]</span>
-        <button class="rbtn" data-chat="${esc(m.id)}" title="reply in thread">↩ reply</button>
-        <span class="ctime">${time}</span>
-      </div>
-      ${m.replyTo ? `<span class="creply">↩ replying to ${parent ? `<b>${esc(chatNameOf(parent))}</b> [${esc(m.replyTo)}]: ${esc(parent.body.slice(0, 80))}` : `[${esc(m.replyTo)}]`}</span>` : ''}
-      <div class="cbody">${chatBodyHTML(m.body)}</div></div>`);
+    if (sync) { items.push({ type: 'sys', m }); continue; }
+    const ann = cleanChatBody(m.body).startsWith('📣');
+    const last = items[items.length - 1];
+    if (last?.type === 'msg' && !ann && !last.ann && !m.replyTo
+      && last.msgs[0].from === m.from && m.ts - last.msgs[last.msgs.length - 1].ts < 5 * 60 * 1000) {
+      last.msgs.push(m);
+    } else {
+      items.push({ type: 'msg', ann, msgs: [m] });
+    }
   }
+
+  const rows = [];
+  for (const it of items) {
+    if (it.type === 'day') { rows.push(`<div class="day">— ${esc(it.label)} —</div>`); continue; }
+    if (it.type === 'sys') {
+      const m = it.m;
+      rows.push(`<div class="cmsg sys" id="cm-${esc(m.id)}"><span class="sysic">⟳</span>
+        <div class="sysbody">${chatBodyHTML(cleanChatBody(m.body))}</div>
+        <span class="ctime">${new Date(m.ts).toTimeString().slice(0, 5)}</span></div>`);
+      continue;
+    }
+    const m0 = it.msgs[0];
+    const agent = m0.fromKind === 'agent' ? S.agents.find((a) => a.id === m0.from) : null;
+    const mine = m0.from === S.me || (m0.fromKind === 'user' && !S.me);
+    const who = agent ? agent.name : m0.name;
+    const kind = m0.fromKind === 'agent' ? (agent ? agent.role : 'agent') : (m0.fromKind === 'person' ? 'teammate' : 'human');
+    const color = chatAvatarColor(m0);
+    const parent = m0.replyTo ? chatMsgById(m0.replyTo) : null;
+    const bodies = it.msgs.map((m, i) => `<div class="cbody ${i ? 'grp' : ''}" id="cm-${esc(m.id)}">${chatBodyHTML(cleanChatBody(m.body))}${i ? `<button class="rbtn" data-chat="${esc(m.id)}" title="reply in thread">↩</button>` : ''}</div>`).join('');
+    rows.push(`<div class="cmsg ${it.ann ? 'ann' : ''} ${mine ? 'mine' : ''}">
+      <span class="cavatar" style="background:color-mix(in srgb, ${color} 22%, var(--surface-2)); color:${color}">${it.ann ? '📣' : esc((who || '?')[0].toUpperCase())}</span>
+      <div class="cmain">
+        <div class="chead">
+          <span class="cwho" style="color:${color}">${esc(who)}</span><span class="ckind">${esc(kind)}</span><span class="cid">[${esc(m0.id)}]</span>
+          <button class="rbtn" data-chat="${esc(m0.id)}" title="reply in thread">↩ reply</button>
+          <span class="ctime">${new Date(m0.ts).toTimeString().slice(0, 8)}</span>
+        </div>
+        ${m0.replyTo ? `<span class="creply" data-goto="${esc(m0.replyTo)}" title="jump to the original">↩ ${parent ? `<b>${esc(chatNameOf(parent))}</b>: ${esc(cleanChatBody(parent.body).slice(0, 80))}` : `[${esc(m0.replyTo)}]`}</span>` : ''}
+        ${bodies}
+      </div></div>`);
+  }
+
   log.innerHTML = rows.length ? rows.join('')
-    : '<div style="color:var(--ink-500); font-size:13px; margin:auto;">Walang laman pa ang #office — start the conversation. Mention @Marlowe (or any agent) to wake them.</div>';
+    : '<div style="color:var(--ink-500); font-size:13px; margin:auto;">#office is empty — start the conversation. Mention @Marlowe (or any agent) to wake them.</div>';
   for (const el of log.querySelectorAll('[data-chat]')) {
     el.onclick = () => setRoomReply(el.dataset.chat);
   }
+  for (const el of log.querySelectorAll('[data-goto]')) el.onclick = () => {
+    const t = document.getElementById('cm-' + el.dataset.goto);
+    if (!t) return;
+    t.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    t.classList.add('flash');
+    setTimeout(() => t.classList.remove('flash'), 1400);
+  };
   const people = new Set(S.chatroom.map((m) => m.from));
   $('roomStats').textContent = `${S.chatroom.length} messages · ${people.size} voices`;
   renderRoomSide();
@@ -936,6 +1019,11 @@ async function sendRoomPost() {
   });
 }
 $('btnRoomSend').onclick = sendRoomPost;
+for (const b of document.querySelectorAll('.chat-filters button')) b.onclick = () => {
+  S.chatFilter = b.dataset.f;
+  document.querySelectorAll('.chat-filters button').forEach((x) => x.classList.toggle('on', x === b));
+  renderRoom();
+};
 $('roomInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendRoomPost(); }
   if (e.key === 'Escape') clearRoomReply();

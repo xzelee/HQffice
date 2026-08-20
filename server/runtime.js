@@ -14,6 +14,7 @@ import {
 import { sendMessage, setTurnRunner, pump, MAX_HOPS } from './router.js';
 import { postChat, unreadChatFor, chatDerived } from './chatroom.js';
 import { getBrain, searchBrain, readBrain, listBrain } from './brain.js';
+import { getSkill } from './shop.js';
 import { listMemoryStore, writeMemoryStore } from './memstore.js';
 import { recordUsage } from './usage.js';
 
@@ -69,6 +70,9 @@ Tasks from the user land on your desk first. Your job is to ORCHESTRATE, not imp
 - update_task moves a task card on the office task board (statuses: inbox, in_progress, review, done). Update it when you start and finish task work.
 ${(agent.tools || []).includes('web') ? '- You can research on the live web with WebSearch and WebFetch. Cite the source URL for every claim you bring back.' : ''}
 ${(agent.tools || []).includes('files') ? '- You can read files in the office workspace with Read, Grep, and Glob.' : ''}
+${(agent.skills || []).length ? `
+## Equipped skills (from the office Skills Shop — these are standing work habits, follow them)
+${(agent.skills || []).map((id) => { const s = getSkill(id); return s ? `- ${s.name} [${s.provider}]: ${s.instruction}` : null; }).filter(Boolean).join('\n')}` : ''}
 ${getBrain() ? `
 ## Project brain — ${getBrain().name} (the office's centralized knowledge)
 All project truth lives in one read-only brain shared by the whole office: roots ${Object.keys(getBrain().roots).map((k) => `"${k}:"`).join(' and ')}. Use brain_search to find where something is covered, brain_read to read a file by ref (e.g. "${getBrain().hub || 'vault:README.md'}"), brain_list to browse. ${getBrain().hub ? `Start at ${getBrain().hub} for orientation.` : ''} Rules: answer project questions FROM the brain, not from memory — cite the ref (e.g. vault:glossary.md:12) for every claim you take from it; never paste long files into chat, reference refs instead; if the brain does not cover something, say so rather than guessing.` : ''}
@@ -77,7 +81,7 @@ All project truth lives in one read-only brain shared by the whole office: roots
 
 function rosterText(selfId) {
   return listAgents()
-    .map((a) => `- ${a.id} — ${a.name}, ${a.role}${a.isOrchestrator ? ' (coordinator)' : ''}${a.id === selfId ? ' ← you' : ''} [${a.status}]`)
+    .map((a) => `- ${a.id} — ${a.name}, ${a.role}${a.isOrchestrator ? ' (coordinator)' : ''}${a.id === selfId ? ' ← you' : ''} [${a.status}]${a.external ? ' (EXTERNAL session on a teammate\'s machine — do NOT send_message; reach it with chat_post @' + a.name + ' in #office, their session reads the room)' : ''}`)
     .join('\n');
 }
 

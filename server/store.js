@@ -34,11 +34,12 @@ export function initStore() {
   state.people = load(PEOPLE_FILE, []);
   for (const p of state.people) { p.online = false; p.sessions = p.sessions || []; }
   // Sessions don't survive a server restart cleanly; reset transient status.
-  for (const a of state.agents) if (a.status !== 'over_budget') a.status = 'idle';
+  // External characters rest at 'offline' (presence-driven), not 'idle'.
+  for (const a of state.agents) if (a.status !== 'over_budget') a.status = a.external ? 'offline' : 'idle';
   // Map v2 migration: reassign every desk allocated on an older map.
   if (state.agents.some((a) => a.desk?.v !== MAP.v)) {
     for (const a of state.agents) a.desk = null;
-    for (const a of state.agents) a.desk = allocateDesk({ isOrchestrator: a.isOrchestrator, ownerId: a.ownerId });
+    for (const a of state.agents) a.desk = allocateDesk({ isOrchestrator: a.isOrchestrator, ownerId: a.ownerId, parentId: a.parentId });
     saveAgents();
   }
   if (!fs.existsSync(BLACKBOARD_FILE)) {
@@ -49,58 +50,124 @@ export function initStore() {
 let idCounter = Date.now() % 100000;
 export function makeId(prefix) { return `${prefix}_${(++idCounter).toString(36)}${Math.random().toString(36).slice(2, 6)}`; }
 
-// --- office map v2 ------------------------------------------------------
-// 46x28 tile grid. Five personal rooms along the top (one per teammate),
-// a meeting room and cafeteria on the right, hot desks on the open floor,
-// coordinator at the central front desk. The client renders from this same
-// definition (served in /api/state) so layout and allocation never drift.
+// --- office map v8: the VILLAGE ------------------------------------------
+// 96x64 tile grid, open-world style (à la Tribes of Malaya / Summertime
+// Saga): every structure is its OWN free-standing building on a big grassy
+// world, connected by paved roads. Buildings carry their walls on
+// x0/x1/y0/y1 with the interior inside. North: five personal HOUSES (labs —
+// owner desk + 10 agent desks). Center: the HQ HALL (front desk, brain
+// core, hot desks). East: MISSION CONTROL and the CAFETERIA as separate
+// buildings, and the SKILLS SHOP far east. South: five WORKSHOPS (sub-agent
+// bays, 8 desks, index === person.roomIndex). The client renders from this
+// same definition (served in /api/state) so layout and allocation never
+// drift.
 export const MAP = {
-  v: 2,
-  w: 46, h: 28,
-  rooms: Array.from({ length: 5 }, (_, i) => ({
-    index: i,
-    x0: 1 + i * 8, y0: 1, x1: 1 + i * 8 + 6, y1: 6,      // interior
-    door: { x: 1 + i * 8 + 3, y: 7 },
-    ownerDesk: { x: 1 + i * 8 + 2, y: 3 },
-    agentDesks: [
-      { x: 1 + i * 8 + 5, y: 3 },
-      { x: 1 + i * 8 + 5, y: 5 },
-      { x: 1 + i * 8 + 2, y: 5 },
-    ],
-  })),
-  meeting: { x0: 36, y0: 10, x1: 44, y1: 17, door: { x: 36, y: 13 }, table: { x0: 38, y0: 12, x1: 42, y1: 14 }, label: 'MEETING ROOM' },
-  cafe: { x0: 36, y0: 20, x1: 44, y1: 26 },
-  entrance: { x: 22, y: 26 },
-  frontDesk: { x: 21, y: 10 },
+  v: 10,
+  w: 80, h: 48,
+  world: 'village',
+  rooms: Array.from({ length: 5 }, (_, i) => {
+    const x0 = 2 + i * 13;
+    return {
+      index: i,
+      x0, y0: 2, x1: x0 + 12, y1: 12,                    // wall ring, interior 11x9
+      door: { x: x0 + 5, y: 12 },                        // south door (2 tiles)
+      ownerDesk: { x: x0 + 6, y: 5 },
+      agentDesks: [                                      // 10 seats
+        ...[2, 4, 6, 8, 10].map((dx) => ({ x: x0 + dx, y: 8 })),
+        ...[2, 4, 6, 8, 10].map((dx) => ({ x: x0 + dx, y: 11 })),
+      ],
+    };
+  }),
+  // east column: skills shop / cafeteria (the meeting room now lives
+  // INSIDE the HQ hall as its conference zone)
+  shop: {
+    x0: 68, y0: 16, x1: 78, y1: 26,
+    door: { x: 68, y: 20 },
+    counter: { x0: 71, y0: 21, x1: 75, y1: 21 },
+    label: 'SKILLS SHOP',
+  },
+  cafe: { x0: 68, y0: 30, x1: 78, y1: 40, door: { x: 68, y: 34 } },
+  hq: {
+    x0: 16, y0: 15, x1: 51, y1: 30,
+    doorS: { x: 33, y: 30 }, doorE: { x: 51, y: 18 },
+    rack: { x: 25, y: 18 }, core: { x: 27, y: 18 },
+    label: 'HQ HALL',
+  },
+  // conference zone INSIDE the HQ hall: a long LANDSCAPE boardroom table
+  // DEAD-CENTER in the hall, chairs along the top and bottom (client
+  // dressing), wall TV on the hall's south wall below it; hot desks are
+  // pushed to the hall's west and east flanks. 2+ humans inside = briefing
+  meeting: { x0: 26, y0: 19, x1: 41, y1: 30, table: { x0: 28, y0: 22, x1: 39, y1: 24 }, label: 'CONFERENCE' },
+  entrance: { x: 33, y: 31 },                            // spawn: on the road at HQ's south door
+  frontDesk: { x: 33, y: 18 },
   hotDesks: [
-    ...[4, 8, 12, 16, 20, 24, 28, 32].map((x) => ({ x, y: 13 })),
-    ...[4, 8, 12, 16, 20, 24, 28, 32].map((x) => ({ x, y: 18 })),
+    ...[18, 20, 22, 24, 26].map((x) => ({ x, y: 21 })),  // west flank
+    ...[18, 20, 22, 24, 26].map((x) => ({ x, y: 24 })),
+    ...[42, 44, 46, 48, 50].map((x) => ({ x, y: 21 })),  // east flank
+    ...[42, 44, 46, 48, 50].map((x) => ({ x, y: 24 })),
   ],
+  bays: Array.from({ length: 5 }, (_, i) => {
+    const x0 = 2 + i * 13;
+    return {
+      index: i,
+      x0, y0: 32, x1: x0 + 12, y1: 42,                   // wall ring, interior 11x9
+      door: { x: x0 + 5, y: 32 },                        // north door (2 tiles)
+      desks: [                                           // 8 seats
+        ...[3, 5, 7, 9].map((dx) => ({ x: x0 + dx, y: 37 })),
+        ...[3, 5, 7, 9].map((dx) => ({ x: x0 + dx, y: 41 })),
+      ],
+    };
+  }),
 };
 
 export function listAgents() { return state.agents; }
 export function getAgent(id) { return state.agents.find((a) => a.id === id); }
 export function getOrchestrator() { return state.agents.find((a) => a.isOrchestrator); }
 
+// Whose team is this agent on? Follow the parent chain up to the first
+// agent with an ownerId — a sub-agent belongs to its spawner's owner.
+function ownerOfLineage(agent) {
+  let cur = agent, hops = 0;
+  while (cur && hops++ < 8) {
+    if (cur.ownerId) return cur.ownerId;
+    cur = cur.parentId ? getAgent(cur.parentId) : null;
+  }
+  return null;
+}
+
 // Desk allocation: coordinator sits at the front desk; an agent owned by a
-// person with a room gets a desk in that room; everyone else takes a hot desk.
-function allocateDesk({ isOrchestrator, ownerId }) {
+// person with a room gets a desk in that room; sub-agents (parentId) are
+// seated in their team's PRIVATE BAY (lineage owner's bay, under that
+// person's lab); everyone else takes a hot desk, with any free bay desk as
+// shared overflow once the floor fills up.
+function allocateDesk({ isOrchestrator, ownerId, parentId }) {
   const taken = new Set(state.agents.map((a) => `${a.desk?.x},${a.desk?.y}`));
   const free = (d) => !taken.has(`${d.x},${d.y}`);
-  if (isOrchestrator) return { ...MAP.frontDesk, v: 2 };
+  const allBayDesks = () => MAP.bays.flatMap((b) => b.desks);
+  if (isOrchestrator) return { ...MAP.frontDesk, v: MAP.v };
   if (ownerId) {
     const owner = getPerson(ownerId);
     const room = owner?.roomIndex != null ? MAP.rooms[owner.roomIndex] : null;
-    const slot = room?.agentDesks.find(free);
-    if (slot) return { ...slot, v: 2 };
+    // owner's room first, their own bay as overflow — an owned agent never
+    // sits out on the open floor while their team has seats
+    const slot = room?.agentDesks.find(free)
+      || (owner?.roomIndex != null ? MAP.bays[owner.roomIndex]?.desks.find(free) : null);
+    if (slot) return { ...slot, v: MAP.v };
   }
-  const hot = MAP.hotDesks.find(free);
-  if (hot) return { ...hot, v: 2 };
-  return { x: 4 + Math.floor(Math.random() * 28), y: 9 + Math.floor(Math.random() * 12), v: 2 };
+  if (parentId) {
+    const oid = ownerId || ownerOfLineage(getAgent(parentId));
+    const owner = oid ? getPerson(oid) : null;
+    const bay = owner?.roomIndex != null ? MAP.bays[owner.roomIndex] : null;
+    const slot = bay?.desks.find(free) || allBayDesks().find(free);
+    if (slot) return { ...slot, v: MAP.v };
+  }
+  const hot = MAP.hotDesks.find(free) || allBayDesks().find(free);
+  if (hot) return { ...hot, v: MAP.v };
+  return { x: 4 + Math.floor(Math.random() * 28), y: 9 + Math.floor(Math.random() * 12), v: MAP.v };
 }
 
-export function createAgent({ name, role, persona, model = 'sonnet', color, avatar, isOrchestrator = false, parentId = null, ownerId = null, tools = [] }) {
-  const desk = allocateDesk({ isOrchestrator, ownerId });
+export function createAgent({ name, role, persona, model = 'sonnet', color, avatar, isOrchestrator = false, parentId = null, ownerId = null, tools = [], external = false }) {
+  const desk = allocateDesk({ isOrchestrator, ownerId, parentId });
   const agent = {
     id: makeId('agent'),
     name, role, persona,
@@ -112,6 +179,8 @@ export function createAgent({ name, role, persona, model = 'sonnet', color, avat
     ownerId,
     isOrchestrator,
     tools: Array.isArray(tools) ? tools.filter((t) => ['web', 'files'].includes(t)) : [],
+    external: !!external,   // a real outside session (Claude dev session, Codex, ...) represented on the floor — never scheduled by the runtime
+    lastPingTs: 0,
     budgetTokens: null,   // lifetime token cap (in+out+cache); null = unlimited
     effort: null,         // per-agent effort override: low|medium|high
     maxTurns: null,       // per-step internal turn cap override
@@ -134,7 +203,7 @@ export function updateAgent(id, patch) {
   // New owner → move desk into (or out of) their room.
   if (patch.ownerId !== undefined && patch.ownerId !== prevOwner) {
     agent.desk = null;
-    agent.desk = allocateDesk({ isOrchestrator: agent.isOrchestrator, ownerId: agent.ownerId });
+    agent.desk = allocateDesk({ isOrchestrator: agent.isOrchestrator, ownerId: agent.ownerId, parentId: agent.parentId });
   }
   if (patch.tools !== undefined) {
     agent.tools = Array.isArray(patch.tools) ? patch.tools.filter((t) => ['web', 'files'].includes(t)) : [];
@@ -145,6 +214,19 @@ export function updateAgent(id, patch) {
   // prompt is stale: start a fresh session on the next turn.
   if (patch.model !== undefined || patch.persona !== undefined || patch.tools !== undefined) agent.sessionId = null;
   saveAgents();
+  emit('agent_updated', { agent });
+  return agent;
+}
+
+// Skills Shop purchase: equip the skill on the agent. The runtime injects
+// equipped skills into the system prompt, so the buyer restarts the session.
+export function grantSkill(id, skillId) {
+  const agent = getAgent(id);
+  if (!agent) return null;
+  agent.skills = agent.skills || [];
+  if (!agent.skills.includes(skillId)) agent.skills.push(skillId);
+  saveAgents();
+  emit('skill_purchased', { agentId: id, name: agent.name, skillId });
   emit('agent_updated', { agent });
   return agent;
 }
@@ -289,6 +371,50 @@ export function expireStaleSessions(maxAgeMs = 60000) {
       p.sessions = [];
       changed = true;
     }
+  }
+  return changed;
+}
+
+// External-agent presence: a teammate's OWN agent stack (Claude via the
+// office-bridge, Codex, OpenClaw) heartbeats here so the office can show
+// "juls' Claude — connected". One entry per kind; expiry mirrors sessions.
+export function heartbeatConnection(id, kind, label = '') {
+  const person = getPerson(id);
+  if (!person) return null;
+  const k = String(kind || 'agent').toLowerCase().replace(/[^\w-]/g, '').slice(0, 20) || 'agent';
+  person.connections = (person.connections || []).filter((c) => c.kind !== k);
+  person.connections.push({ kind: k, label: String(label || '').slice(0, 60), ts: Date.now() });
+  person.lastSeen = Date.now();
+  return person;
+}
+
+// External AGENT presence: an outside session heartbeats its floor character.
+export function heartbeatAgent(id, label = '') {
+  const agent = getAgent(id);
+  if (!agent || !agent.external) return null;
+  agent.lastPingTs = Date.now();
+  if (agent.status !== 'online') { agent.status = 'online'; emit('agent_status', { agentId: id, status: 'online', detail: label }); }
+  return agent;
+}
+
+export function expireStaleAgentPings(maxAgeMs = 90000) {
+  let changed = false;
+  for (const a of state.agents) {
+    if (a.external && a.status === 'online' && Date.now() - (a.lastPingTs || 0) > maxAgeMs) {
+      a.status = 'offline';
+      emit('agent_status', { agentId: a.id, status: 'offline', detail: '' });
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+export function expireStaleConnections(maxAgeMs = 90000) {
+  let changed = false;
+  for (const p of state.people) {
+    if (!p.connections?.length) continue;
+    const live = p.connections.filter((c) => Date.now() - c.ts <= maxAgeMs);
+    if (live.length !== p.connections.length) { p.connections = live; changed = true; }
   }
   return changed;
 }

@@ -48,6 +48,16 @@ export function listMemoryStore() {
     .slice(0, MAX_TOPICS);
 }
 
+// Raw topic content for the Baul UI editor (numbered brain_read is for
+// agents; humans edit the real bytes).
+export function readMemoryRaw(topic) {
+  const slug = slugOf(topic);
+  const file = path.join(storeDir, slug + '.md');
+  if (!fs.existsSync(file)) throw new Error(`no topic "${slug}.md"`);
+  const content = fs.readFileSync(file, 'utf8');
+  return { topic: slug + '.md', hash: hashOf(content), content };
+}
+
 export function writeMemoryStore({ topic, content, append = false, by = 'office' }) {
   if (!storeDir) throw new Error('memory store not initialized');
   const slug = slugOf(topic);

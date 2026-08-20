@@ -9,14 +9,17 @@ import os from 'node:os';
 import { initEventLog, emit, emitTransient, subscribe, recentEvents } from './eventlog.js';
 import {
   WORKSPACE, MAP, initStore, listAgents, getAgent, createAgent, updateAgent, removeAgent,
-  setAgentSession, listTasks, createTask, updateTask, getOrchestrator, readBlackboard,
+  setAgentSession, grantSkill, listTasks, createTask, updateTask, getOrchestrator, readBlackboard, appendBlackboard,
   listPeople, getPerson, createPerson, updatePerson, setPersonPresence, setPersonPos,
-  setPersonSessions, expireStaleSessions,
+  setPersonSessions, expireStaleSessions, heartbeatConnection, expireStaleConnections, heartbeatAgent, expireStaleAgentPings,
 } from './store.js';
 import { sendMessage, pendingCounts, pump, setPaused, isPaused } from './router.js';
 import { initChat, postChat, recentChat, chatDerived, rotateChat } from './chatroom.js';
 import { initBrain, getBrain, setBrain, listBrain, readBrain, searchBrain } from './brain.js';
-import { initMemStore, listMemoryStore } from './memstore.js';
+import { initBrainWatch } from './brainwatch.js';
+import { SKILLS, getSkill } from './shop.js';
+import { initMemStore, listMemoryStore, readMemoryRaw, writeMemoryStore } from './memstore.js';
+import { initXp, xpSummary } from './xp.js';
 import { initTicketSync, syncTickets } from './ticketsync.js';
 import { initUsage, usageSummary } from './usage.js';
 import { initRuntime, ensureDefaultRoster, MODEL_CHOICES } from './runtime.js';
@@ -38,7 +41,9 @@ initEventLog(WORKSPACE);
 initStore();
 initChat(WORKSPACE);
 initBrain(WORKSPACE);
+initBrainWatch(WORKSPACE);
 initMemStore(WORKSPACE);
+initXp(WORKSPACE);
 initUsage(WORKSPACE);
 initRuntime();
 ensureDefaultRoster();
@@ -65,8 +70,10 @@ app.get('/api/state', (_req, res) => {
     chat: recentChat(200),
     chatMeta: chatDerived(),
     schedulerPaused: isPaused(),
+    meetingCall,
     brain: getBrain(),
     memoryStore: listMemoryStore(),
+    xp: xpSummary(),
     models: MODEL_CHOICES,
     presets: ROLE_PRESETS,
     events: recentEvents(150),
@@ -77,6 +84,13 @@ app.get('/api/state', (_req, res) => {
 app.post('/api/people', (req, res) => {
   const { name, appearance } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
+  // Rejoining with an existing name reclaims that character (an IP change
+  // wipes browser localStorage — that must never mint a duplicate person).
+  const existing = listPeople().find((p) => p.name.toLowerCase() === String(name).trim().toLowerCase());
+  if (existing) {
+    if (appearance) updatePerson(existing.id, { appearance });
+    return res.json({ person: getPerson(existing.id) });
+  }
   const person = createPerson({ name, appearance });
   res.json({ person });
 });
@@ -97,9 +111,9 @@ app.post('/api/people/:id/sessions', (req, res) => {
 
 // --- agents -------------------------------------------------------------
 app.post('/api/agents', (req, res) => {
-  const { name, role, persona, model, color, avatar, tools, ownerId, budgetTokens, effort } = req.body || {};
+  const { name, role, persona, model, color, avatar, tools, ownerId, budgetTokens, effort, external } = req.body || {};
   if (!name || !role) return res.status(400).json({ error: 'name and role are required' });
-  const agent = createAgent({ name, role, persona: persona || '', model: model || 'sonnet', color, avatar, tools, ownerId: ownerId || null });
+  const agent = createAgent({ name, role, persona: persona || '', model: model || 'sonnet', color, avatar, tools, ownerId: ownerId || null, external: !!external });
   if (budgetTokens || effort) updateAgent(agent.id, { budgetTokens: budgetTokens || null, effort: effort || null });
   res.json({ agent: getAgent(agent.id) });
 });
@@ -166,6 +180,20 @@ app.post('/api/chat/as', localOnly, (req, res) => {
   res.json({ ok: true, id: out.msg.id, woke: out.woke });
 });
 
+// The Baul (team memory store) — office-wide like the chatroom: teammates
+// read raw topics and write through the same audited path agents use.
+app.get('/api/memory/raw', (req, res) => {
+  try { res.json(readMemoryRaw(req.query.topic)); }
+  catch (e) { res.status(404).json({ error: String(e.message || e) }); }
+});
+app.post('/api/memory', (req, res) => {
+  const { topic, content, append, personId } = req.body || {};
+  if (!topic || content === undefined) return res.status(400).json({ error: 'topic and content required' });
+  const person = personId ? getPerson(personId) : null;
+  try { res.json(writeMemoryStore({ topic, content, append: !!append, by: person ? person.id : 'user' })); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+
 // Controls: archive rotation for the chat log.
 app.post('/api/chat/rotate', localOnly, (req, res) => {
   res.json(rotateChat(Math.max(20, +req.body?.keep || 100)));
@@ -186,6 +214,51 @@ app.post('/api/brain', localOnly, (req, res) => {
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
+});
+
+// Meeting call: when someone calls a meeting, EVERYONE shows up — every
+// client walks its agents to the conference table while this is active,
+// and the call is announced in #office. Live state only, not persisted.
+let meetingCall = null;   // { active, by, name, ts } | null
+app.post('/api/meeting', (req, res) => {
+  const { active, personId } = req.body || {};
+  const person = personId ? getPerson(personId) : null;
+  const name = person ? person.name : 'user';
+  meetingCall = active ? { active: true, by: person ? person.id : 'user', name, ts: Date.now() } : null;
+  emit('meeting_call', { active: !!active, name });
+  postChat({
+    from: person ? person.id : 'user', fromKind: person ? 'person' : 'user', name,
+    body: active
+      ? '📣 MEETING CALLED — everyone to the conference table in the HQ Hall, right now! Attendance required.'
+      : '📣 Meeting adjourned — back to work, thanks everyone!',
+  });
+  res.json({ meetingCall });
+});
+
+// The hall billboard: the wall TV is wired to the shared blackboard. Read
+// it, or pin a note — pinning appends through the same audited path agents
+// use (blackboard_append), so a pinned note reaches every agent's context.
+app.get('/api/blackboard', (_req, res) => res.json({ blackboard: readBlackboard() }));
+app.post('/api/blackboard', (req, res) => {
+  const { text, personId } = req.body || {};
+  if (!text || !String(text).trim()) return res.status(400).json({ error: 'text required' });
+  const person = personId ? getPerson(personId) : null;
+  appendBlackboard(`[${person ? person.name : 'user'}] ${String(text).trim().slice(0, 2000)}`, person ? person.id : 'user');
+  res.json({ ok: true, blackboard: readBlackboard() });
+});
+
+// Skills Shop: catalog + purchase. Buying equips the skill (its instruction
+// lands in the agent's system prompt), so the session restarts fresh.
+app.get('/api/shop', (_req, res) => res.json({ skills: SKILLS }));
+app.post('/api/shop/buy', (req, res) => {
+  const { agentId, skillId } = req.body || {};
+  const agent = getAgent(agentId);
+  if (!agent) return res.status(404).json({ error: 'no such agent' });
+  if (!getSkill(skillId)) return res.status(404).json({ error: 'no such skill' });
+  if ((agent.skills || []).includes(skillId)) return res.status(400).json({ error: 'already equipped' });
+  grantSkill(agentId, skillId);
+  setAgentSession(agentId, null);
+  res.json({ agent: getAgent(agentId) });
 });
 
 // Brain browser: read-only endpoints behind the BRAIN CORE terminal on the
@@ -272,9 +345,96 @@ wss.on('connection', (ws) => {
   });
 });
 
+// One-line onboarding: the server serves a personalized installer per
+// teammate — `irm http://<office>/install/juls | iex` does everything
+// (bridge download, identity-baked config, safe hook merge, self-check).
+// We set them up; they paste one line.
+app.get('/office-bridge.mjs', (_req, res) => {
+  res.type('application/javascript').sendFile(path.join(here, '..', 'tools', 'office-bridge.mjs'));
+});
+
+// Linux/macOS variant: curl -fsSL http://<office>/install/<name>.sh | bash
+app.get('/install/:name.sh', (req, res) => {
+  const person = listPeople().find((p) => p.name.toLowerCase() === String(req.params.name).toLowerCase());
+  if (!person) return res.status(404).type('text/plain').send(`# no teammate named "${req.params.name}" — walk into the office first (or check spelling)`);
+  const base = `http://${req.headers.host}`;
+  const cfg = JSON.stringify({ server: base, personId: person.id, name: person.name }, null, 2);
+  res.type('text/plain').send(`#!/usr/bin/env bash
+# HQ office-bridge installer for ${person.name} — generated by the office
+set -e
+DIR="$HOME/.hqffice"
+mkdir -p "$DIR"
+curl -fsSL "${base}/office-bridge.mjs" -o "$DIR/office-bridge.mjs"
+cat > "$DIR/config.json" << 'CFGEOF'
+${cfg}
+CFGEOF
+node "$DIR/office-bridge.mjs" install-hooks
+node "$DIR/office-bridge.mjs" check
+echo ""
+echo "Done, ${person.name}! Start a NEW Claude session (claude -c) - the office context arrives automatically."
+`);
+});
+
+app.get('/install/:name', (req, res) => {
+  const person = listPeople().find((p) => p.name.toLowerCase() === String(req.params.name).toLowerCase());
+  if (!person) return res.status(404).type('text/plain').send(`# no teammate named "${req.params.name}" — walk into the office first (or check spelling)`);
+  const base = `http://${req.headers.host}`;
+  const cfg = JSON.stringify({ server: base, personId: person.id, name: person.name }, null, 2);
+  res.type('text/plain').send(`# HQ office-bridge installer for ${person.name} — generated by the office
+$ErrorActionPreference = "Stop"
+$dir = "$env:USERPROFILE\\.hqffice"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Invoke-WebRequest -Uri "${base}/office-bridge.mjs" -OutFile "$dir\\office-bridge.mjs"
+@'
+${cfg}
+'@ | Set-Content -Encoding utf8 "$dir\\config.json"
+node "$dir\\office-bridge.mjs" install-hooks
+node "$dir\\office-bridge.mjs" check
+Write-Host ""
+Write-Host "Done, ${person.name}! Start a NEW Claude session (claude -c) - the office context arrives automatically." -ForegroundColor Green
+`);
+});
+
+// External-agent presence heartbeat: a teammate's own Claude (office-bridge),
+// Codex, or OpenClaw pings this so the office shows them as connected.
+// Auto-provision: the first heartbeat from a teammate's agent stack
+// materializes a floor character for it ("juls-claude", "stephen-codex").
+// No prompting, no manual step — connecting IS appearing.
+const EXT_AVATAR = { claude: '💻', codex: '🟦', openclaw: '🦞' };
+function externalAgentFor(person, kind) {
+  const name = `${person.name}-${kind}`;
+  let agent = listAgents().find((a) => a.external && a.name.toLowerCase() === name.toLowerCase());
+  if (!agent) {
+    agent = createAgent({
+      name, role: `${kind} agent (${person.name}'s own session)`, model: 'sonnet',
+      avatar: EXT_AVATAR[kind] || '🔌', ownerId: person.id, external: true,
+      persona: `${person.name}'s own ${kind} session, represented on the floor. Runs on their machine — mentions here are held, never billed. Reach them through #office; their session hears it via their bridge.`,
+    });
+  }
+  return agent;
+}
+
+app.post('/api/presence', (req, res) => {
+  const { personId, agentId, kind, label } = req.body || {};
+  if (agentId) {
+    const agent = heartbeatAgent(agentId, label);
+    if (!agent) return res.status(404).json({ error: 'no such external agent' });
+    return res.json({ ok: true, status: agent.status });
+  }
+  const person = heartbeatConnection(personId, kind, label);
+  if (person) {
+    const k = String(kind || 'agent').toLowerCase().replace(/[^\w-]/g, '').slice(0, 20) || 'agent';
+    heartbeatAgent(externalAgentFor(person, k).id, label);
+  }
+  if (!person) return res.status(404).json({ error: 'no such person — run office-bridge setup first' });
+  emitTransient('person_connections', { personId: person.id, connections: person.connections });
+  res.json({ ok: true, connections: person.connections });
+});
+
 // Beacon expiry: a machine that stops reporting drops its live sessions.
 setInterval(() => {
-  if (expireStaleSessions()) emitTransient('people_sync', { people: listPeople() });
+  const changed = expireStaleSessions() | expireStaleConnections() | expireStaleAgentPings();
+  if (changed) emitTransient('people_sync', { people: listPeople() });
 }, 30000);
 
 function lanAddresses() {

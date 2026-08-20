@@ -59,8 +59,10 @@ export function sendMessage({ from, to, act = 'inform', body, taskId = null, hop
   emit('message_delivered', { message: msg, toName: recipient.name });
   // Token saver: a plain "ack" is delivered but does not wake the recipient —
   // they'll see it batched with their next real message. Everything else
-  // schedules a turn.
-  if (act !== 'ack') {
+  // schedules a turn. External agents (real outside sessions represented on
+  // the floor) are NEVER scheduled — their mail is held; they read the room
+  // through their own session's bridge/channel instead.
+  if (act !== 'ack' && !recipient.external) {
     dirty.add(to);
     queueMicrotask(pump);
   }
