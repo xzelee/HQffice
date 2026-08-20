@@ -152,7 +152,11 @@ export function chatDerived() {
   for (const m of messages) {
     const need = authoritative(m.body).match(/^DECISION-NEEDED:\s*(.+)$/m);
     if (!need) continue;
-    const decided = (replies.get(m.id) || []).some((r) => r.fromKind !== 'agent' && /^DECISION:/m.test(authoritative(r.body)));
+    // Multi-user authority: kapag naka-tag ang specific na tao sa ask,
+    // SIYA LANG ang makakapagsara nito; walang tag = any human decides.
+    const decided = (replies.get(m.id) || []).some((r) => r.fromKind !== 'agent'
+      && /^DECISION:/m.test(authoritative(r.body))
+      && (!(m.personMentions || []).length || m.personMentions.includes(r.from)));
     if (!decided) decisions.push({ id: m.id, from: m.from, by: m.name, text: need[1].slice(0, 200), ts: m.ts });
   }
 
@@ -171,7 +175,17 @@ export function chatDerived() {
     blockers.push({ id: m.id, from: m.from, by: m.name, what: b[1].slice(0, 120), target: agent ? agent.id : target.slice(0, 40), targetKind: agent ? 'agent' : 'external', ts: m.ts });
   }
 
-  return { openAsks: openAsks.slice(-20), promises: promises.slice(-20), decisions: decisions.slice(-10), blockers: blockers.slice(-20) };
+  // D11: authority is typed, scoped, expirable. A scoped GO from a human is
+  // a STANDING DECISION; a bare GO covers only its reply target.
+  const standing = [];
+  const STANDING_RE = /^DECISION:\s*(GO|NO-GO|HOLD)\s*\|\s*scope:\s*([^|]+?)\s*(?:\|\s*expires:\s*(.+))?$/mi;
+  for (const m of messages) {
+    if (m.fromKind === 'agent') continue;
+    const sm = STANDING_RE.exec(authoritative(m.body));
+    if (sm) standing.push({ id: m.id, from: m.from, by: m.name, verdict: sm[1].toUpperCase(), scope: sm[2].trim().slice(0, 120), expires: sm[3] ? sm[3].trim().slice(0, 40) : null, ts: m.ts });
+  }
+
+  return { openAsks: openAsks.slice(-20), promises: promises.slice(-20), decisions: decisions.slice(-10), blockers: blockers.slice(-20), standing: standing.slice(-10) };
 }
 
 // Archive rotation: move everything but the newest `keep` messages into a

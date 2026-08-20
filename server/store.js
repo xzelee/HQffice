@@ -90,8 +90,21 @@ export const MAP = {
   hq: {
     x0: 16, y0: 15, x1: 51, y1: 30,
     doorS: { x: 33, y: 30 }, doorE: { x: 51, y: 18 },
-    rack: { x: 25, y: 18 }, core: { x: 27, y: 18 },
     label: 'HQ HALL',
+  },
+  // the BRAIN VAULT — a high-tech data-center building housing the project
+  // brain (racks + the core; clicking the core opens the archive terminal).
+  // The door is ACCESS CONTROLLED: identification at the keypad — your name
+  // + password, default 123 (checked by POST /api/vault/unlock).
+  vault: {
+    x0: 68, y0: 2, x1: 78, y1: 12,
+    door: { x: 68, y: 7 },
+    core: { x: 73, y: 8 },
+    racks: [
+      { x: 70, y: 4 }, { x: 72, y: 4 }, { x: 74, y: 4 }, { x: 76, y: 4 },
+      { x: 70, y: 8 }, { x: 76, y: 8 },
+    ],
+    label: 'BRAIN VAULT',
   },
   // conference zone INSIDE the HQ hall: a long LANDSCAPE boardroom table
   // DEAD-CENTER in the hall, chairs along the top and bottom (client

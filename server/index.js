@@ -21,6 +21,7 @@ import { SKILLS, getSkill } from './shop.js';
 import { initMemStore, listMemoryStore, readMemoryRaw, writeMemoryStore } from './memstore.js';
 import { initXp, xpSummary } from './xp.js';
 import { initTicketSync, syncTickets } from './ticketsync.js';
+import { initVerify, claimVerdicts } from './verify.js';
 import { initUsage, usageSummary } from './usage.js';
 import { initRuntime, ensureDefaultRoster, MODEL_CHOICES } from './runtime.js';
 import { ROLE_PRESETS } from './roles.js';
@@ -48,6 +49,7 @@ initUsage(WORKSPACE);
 initRuntime();
 ensureDefaultRoster();
 initTicketSync();
+initVerify(WORKSPACE);
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -74,6 +76,7 @@ app.get('/api/state', (_req, res) => {
     brain: getBrain(),
     memoryStore: listMemoryStore(),
     xp: xpSummary(),
+    claims: claimVerdicts(),
     models: MODEL_CHOICES,
     presets: ROLE_PRESETS,
     events: recentEvents(150),
@@ -233,6 +236,21 @@ app.post('/api/meeting', (req, res) => {
       : '📣 Meeting adjourned — back to work, thanks everyone!',
   });
   res.json({ meetingCall });
+});
+
+// The BRAIN VAULT door: identification required — your name + password
+// (default 123, overridable via person.doorPass). This gates the vault
+// building on the map; the brain API itself stays office-wide since agents
+// already read it through their tools.
+app.post('/api/vault/unlock', (req, res) => {
+  const { name, password } = req.body || {};
+  const person = listPeople().find((p) => p.name.toLowerCase() === String(name || '').trim().toLowerCase());
+  if (!person || String(password ?? '') !== String(person.doorPass ?? '123')) {
+    emit('vault_denied', { name: String(name || '').slice(0, 40) });
+    return res.status(403).json({ error: 'ACCESS DENIED — check your name and password' });
+  }
+  emit('vault_access', { personId: person.id, name: person.name });
+  res.json({ ok: true, personId: person.id });
 });
 
 // The hall billboard: the wall TV is wired to the shared blackboard. Read

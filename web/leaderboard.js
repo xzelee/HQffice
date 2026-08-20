@@ -84,7 +84,7 @@
     const xp = d.xp || {};
     const rows = Object.entries(xp)
       .map(([id, v]) => ({ id, ...v, ...resolveEntity(id, d) }))
-      .sort((a, b) => b.xp - a.xp);
+      .sort((a, b) => (b.xp - a.xp) || a.id.localeCompare(b.id));   // stable ties — the podium never flickers
     const top = rows.slice(0, 3);
     const rest = rows.slice(3, 10);
     const maxXp = rows[0]?.xp || 1;

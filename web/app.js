@@ -45,6 +45,7 @@ async function boot() {
   S.chatroom = data.chat || [];
   S.schedulerPaused = !!data.schedulerPaused;
   S.brain = data.brain || null;
+  S.claims = data.claims || {};
   S.blackboard = data.blackboard || '';
   S.meetingCall = data.meetingCall || null;
   renderMeetingBtn();
@@ -149,7 +150,7 @@ function handleEvent(ev) {
       break;
     case 'subagent_spawned': OfficeFloor.onSpawn(ev.agentId); break;
     // --- people ---
-    case 'person_joined': S.people.push(ev.person); OfficeFloor.onRosterChange(); break;
+    case 'person_joined': S.people.push(ev.person); OfficeFloor.onRosterChange(); LiveGraph.onRosterChange(); break;
     case 'person_updated': {
       const i = S.people.findIndex((p) => p.id === ev.person.id);
       if (i >= 0) S.people[i] = { ...S.people[i], ...ev.person };
@@ -181,6 +182,7 @@ function handleEvent(ev) {
       const m = ev.message;
       if (!S.chatroom.some((c) => c.id === m.id)) {
         S.chatroom.push(m);
+        LiveGraph.onChat?.(m);
         if (S.chatroom.length > 500) S.chatroom.splice(0, 100);
         if (S.view === 'chat') renderRoom();
         if (S.view === 'workflows') OfficeWorkflows.render();
@@ -197,6 +199,11 @@ function handleEvent(ev) {
     case 'brain_configured':
       S.brain = ev.brain || null;
       if (S.view === 'controls') renderControls();
+      break;
+    case 'claim_verified':
+      S.claims = S.claims || {};
+      S.claims[ev.msgId] = ev;
+      if (S.view === 'chat') renderRoom();
       break;
     case 'chat_rotated':
       fetch('/api/state').then((r) => r.json()).then((d) => {
@@ -315,6 +322,8 @@ const FEED_LABELS = {
   meeting_call: (e) => e.active
     ? `📣 <b>${esc(e.name)}</b> called a meeting — everyone to the conference table!`
     : `📣 meeting adjourned`,
+  vault_access: (e) => `🔓 <b>${esc(e.name)}</b> entered the Brain Vault`,
+  vault_denied: (e) => `🔐 failed Brain Vault access attempt${e.name ? ` ("${esc(e.name)}")` : ''}`,
 };
 function feedLineHTML(ev) {
   const fn = FEED_LABELS[ev.type];
@@ -755,6 +764,16 @@ function chatBodyHTML(body) {
     .replace(/^(DECISION-NEEDED:|DECISION:)/gm, '<span class="mk decision">$1</span>');
   return html;
 }
+// Claim verdict badge (the lab's verify rings, chat edition): the verifier
+// checked this message's CLAIM pointer against shared truth.
+function claimBadge(id) {
+  const v = (S.claims || {})[id];
+  if (!v) return '';
+  const map = { verified: ['✓ verified', 'var(--mint)'], contradicted: ['✗ contradicted', 'var(--coral)'], unverifiable: ['? unverifiable', 'var(--lemon)'] };
+  const [label, color] = map[v.verdict] || ['?', 'var(--text-3)'];
+  return `<span title="${esc(v.claim || '')} — ${esc(v.detail || '')}" style="font-size:10px; font-family:var(--font-mono); color:${color}; border:1px solid ${color}; border-radius:999px; padding:0 7px;">${label}</span>`;
+}
+
 function chatMsgById(id) { return S.chatroom.find((m) => m.id === id); }
 function chatNameOf(m) {
   if (!m) return '?';
@@ -964,7 +983,7 @@ function renderRoom() {
       <span class="cavatar" style="background:color-mix(in srgb, ${color} 22%, var(--surface-2)); color:${color}">${it.ann ? '📣' : esc((who || '?')[0].toUpperCase())}</span>
       <div class="cmain">
         <div class="chead">
-          <span class="cwho" style="color:${color}">${esc(who)}</span><span class="ckind">${esc(kind)}</span><span class="cid">[${esc(m0.id)}]</span>
+          <span class="cwho" style="color:${color}">${esc(who)}</span><span class="ckind">${esc(kind)}</span><span class="cid">[${esc(m0.id)}]</span>${it.msgs.map((mm) => claimBadge(mm.id)).join('')}
           <button class="rbtn" data-chat="${esc(m0.id)}" title="reply in thread">↩ reply</button>
           <span class="ctime">${new Date(m0.ts).toTimeString().slice(0, 8)}</span>
         </div>

@@ -26,6 +26,15 @@ const OfficeWorkflows = (() => {
     if (from === 'user') return 'user';
     return S.people.find((p) => p.id === from)?.name || from;
   }
+  // A post prefixed "[local-alex] ..." (the bridge convention for a
+  // teammate's own agent) gets its OWN swimlane — the unified view shows
+  // every speaking agent across every machine, not just office characters.
+  function laneOf(m) {
+    const pre = /^\[([\w-]{2,24})\]/.exec(m.body || '');
+    if (pre) return pre[1];
+    return laneName(m.from, m.fromKind);
+  }
+
   function laneColor(from, fromKind) {
     // literal fallback (not a CSS var) — used in SVG presentation attributes;
     // mid-gray reads on both day and night paper
@@ -65,15 +74,18 @@ const OfficeWorkflows = (() => {
       const b = auth(m.body).match(/^BLOCKED:\s*(.+?)\s+ON:\s*(.+?)\s*$/m);
       if (b && !b[1].includes('<') && !b[2].includes('<')) g.edges.push({ from: m.id, to: null, type: 'blocks', label: b[2].trim().slice(0, 30) });
     }
-    return [...graphs.values()].sort((a, b) => Math.max(...b.nodes.map((n) => n.ts)) - Math.max(...a.nodes.map((n) => n.ts)));
+    // Deterministic ordering (the lab's rule: a coordination view holds
+    // still) — ts desc, then stable id tiebreak so equal stamps never flip.
+    return [...graphs.values()].sort((a, b) =>
+      (Math.max(...b.nodes.map((n) => n.ts)) - Math.max(...a.nodes.map((n) => n.ts))) || a.id.localeCompare(b.id));
   }
 
   // ---------------------------------------------------------- work-graphs
   function workGraphCard(g) {
     const lanes = [];
     for (const n of g.nodes) {
-      const key = n.from;
-      if (!lanes.some((l) => l.key === key)) lanes.push({ key, name: laneName(n.from, n.fromKind), color: laneColor(n.from, n.fromKind) });
+      const key = laneOf(n);
+      if (!lanes.some((l) => l.key === key)) lanes.push({ key, name: key, color: laneColor(n.from, n.fromKind) });
     }
     const X0 = 150, DX = 64, DY = 44, R = 6;
     const w = X0 + g.nodes.length * DX + 40, h = 26 + lanes.length * DY;
@@ -86,7 +98,7 @@ const OfficeWorkflows = (() => {
       parts.push(`<line x1="${X0 - 16}" y1="${y}" x2="${w - 14}" y2="${y}" stroke-width="1" style="stroke:var(--border)"/>`);
     });
     g.nodes.forEach((n, i) => {
-      const li = lanes.findIndex((l) => l.key === n.from);
+      const li = lanes.findIndex((l) => l.key === laneOf(n));
       pos.set(n.id, { x: X0 + i * DX, y: 30 + li * DY });
     });
     // edges under nodes
@@ -139,10 +151,9 @@ const OfficeWorkflows = (() => {
       else if (!targets.has(tid)) targets.set(tid, { id: tid, label: b.target });
       items.push({ id: 'blk:' + b.id, kind: 'blocked', label: b.what, owner: 'lane:' + b.from, to: tid });
     }
-    for (const p of meta.promises || []) {
-      addLane(p.from, S.agents.some((a) => a.id === p.from) ? 'agent' : 'user');
-      items.push({ id: 'wil:' + p.id, kind: 'promise', label: p.text, owner: 'lane:' + p.from, to: null });
-    }
+    // Promise nodes deliberately EXCLUDED here (the lab builder's cut list:
+    // they duplicate the rail's promise panel and bloat the middle layer —
+    // the dependency graph reads best as blockers + decisions only).
     for (const d of meta.decisions || []) {
       addLane(d.from, 'agent');
       items.push({ id: 'dec:' + d.id, kind: 'decision', label: d.text, owner: 'lane:' + d.from, to: 'user' });

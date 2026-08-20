@@ -13,6 +13,7 @@ import {
 } from './store.js';
 import { sendMessage, setTurnRunner, pump, MAX_HOPS } from './router.js';
 import { postChat, unreadChatFor, chatDerived } from './chatroom.js';
+import { briefFor, renderBrief } from './brief.js';
 import { getBrain, searchBrain, readBrain, listBrain } from './brain.js';
 import { getSkill } from './shop.js';
 import { listMemoryStore, writeMemoryStore } from './memstore.js';
@@ -62,7 +63,7 @@ Tasks from the user land on your desk first. Your job is to ORCHESTRATE, not imp
   - Be token-frugal: no courtesy messages (thanks, congrats, "got it") — a plain "ack" only when the sender truly needs confirmation. One message that does the work beats three that narrate it. Keep your private worklog note to one short line.
 - The office has ONE shared chatroom, #office — the centralized room where every agent and every human teammate shares work context. Post with chat_post when a finding, decision, or question matters beyond one person; unread chatroom messages appear in your turn context automatically. Mention @Name to get a specific teammate's attention — a mention wakes them, a plain post wakes nobody. Same etiquette as mail: short, decisive, no courtesy posts.
 - Chatroom threading is how work gets PROVEN, not decoration. Every chat message has an id like [ab12cd34]. When you answer a specific message, pass reply_to with that id — a threaded reply is what closes an open ask; posting next to it proves nothing. Mail tagged [#office <id>] is a chatroom mention of you: answer in the chatroom with chat_post + reply_to <id>, not send_message.
-- Chatroom markers (a line starting with the keyword): "WILL: <thing>" promises future work — it is tracked as open until YOU close it with a threaded reply containing "DONE: <what happened>"; your open promises follow you in your turn context. "DECISION-NEEDED: <question>" queues a call only the human user can make; a human closes it with a threaded "DECISION:" reply — never decide it yourself. "BLOCKED: <what> ON: <target>" declares a real dependency (target = an agent name, or an external thing like hardware or credentials) — it draws an edge on the office dependency graph until you clear it with a threaded "DONE:" reply; only this typed form counts, prose "I'm blocked" draws nothing.
+- Chatroom markers (a line starting with the keyword): "WILL: <thing>" promises future work — it is tracked as open until YOU close it with a threaded reply containing "DONE: <what happened>"; your open promises follow you in your turn context. "DECISION-NEEDED: <question>" queues a call only the human user can make; a human closes it with a threaded "DECISION:" reply — never decide it yourself. "CLAIM: <text> | check: <kind> <args>" makes a consequential claim MACHINE-CHECKABLE — the office verifier dereferences the pointer itself (kinds: http <url> [== code] / repo <path> [contains "s"] / vault <path> / memory <topic> / git-tracked <path> / commit <sha> / halm <HALM-n> [status]); unpushed or unreachable evidence stays UNVERIFIABLE, so point at shared truth. Attach a CLAIM to every "shipped/done/live" statement. "BLOCKED: <what> ON: <target>" declares a real dependency (target = an agent name, or an external thing like hardware or credentials) — it draws an edge on the office dependency graph until you clear it with a threaded "DONE:" reply; only this typed form counts, prose "I'm blocked" draws nothing.
 - The shared blackboard (blackboard_read / blackboard_append) is for notes everyone should see: decisions, findings, status.
 - Save durable personal learnings with memory_save; your saved memory appears below and follows you across conversations.
 - The office also keeps a shared TEAM memory store — mounted both ways: humans edit its files directly, you write with memory_write, and everyone reads it. Its index rides in your turn context; read a topic with brain_read("memory:<topic>.md"). Put durable knowledge the TEAM needs there (decisions, gotchas, service notes) — keep private observations in memory_save.
@@ -95,7 +96,7 @@ function formatIncoming(agent, batch) {
   // bounded; count the overflow instead of silently dropping it.
   const { msgs: chat, older, lastTs } = unreadChatFor(agent.chatCursorTs, 25);
   setAgentChatCursor(agent.id, lastTs);
-  const myPromises = chatDerived().promises.filter((p) => p.from === agent.id);
+  const myBrief = renderBrief(briefFor(agent.id));
   const memIndex = listMemoryStore().slice(0, 20);
   return `## Office roster (message ids you can send to; "user" reaches the human)
 This is the CURRENT floor and it SUPERSEDES any roster earlier in this conversation — anyone absent here has left; do not message them.
@@ -105,7 +106,9 @@ ${memory ? `\n## Your long-term memory\n${memory}\n` : ''}
 ## Open tasks on the board
 ${tasks.length ? tasks.map((t) => `- ${t.id} [${t.status}] ${t.title}${t.assignedTo ? ` (assigned: ${t.assignedTo})` : ''}`).join('\n') : '(none)'}
 ${chat.length ? `\n## #office chatroom — ${chat.length} unread for you${older ? ` (+${older} older unread not shown)` : ''} (ambient context; reply via chat_post with reply_to only if it concerns you)\n${chat.map((c) => `[${c.id}]${c.replyTo ? ` (re: ${c.replyTo})` : ''} ${c.name}${c.fromKind === 'agent' ? '' : ' (human)'}: ${c.body.slice(0, 300)}`).join('\n')}` : ''}
-${myPromises.length ? `\n## Your open chatroom promises (close each with a threaded reply carrying "DONE: <result>"${myPromises.some((p) => p.state === 'replied') ? '; a reply without DONE: does not close it' : ''})\n${myPromises.map((p) => `- [${p.id}] (${p.state}) WILL: ${p.text}`).join('\n')}` : ''}
+${myBrief ? `
+## Your standing state (computed from the ledger + verifier — act on these before new work)
+${myBrief}` : ''}
 ${memIndex.length ? `\n## Team memory store (shared; read via brain_read("memory:<file>"), update via memory_write)\n${memIndex.map((t) => `- ${t.topic} [${t.hash}] — ${t.hint}`).join('\n')}` : ''}
 
 ## New mail for you (${batch.length})

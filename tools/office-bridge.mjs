@@ -241,13 +241,25 @@ REPORTING POLICY (Stan): post at least one [lane] progress line to #office befor
 
   const shown = unread.slice(-MAX_SHOWN);
   const memIdx = (d.memoryStore || []).slice(0, 8).map((t) => `- ${t.topic} [${t.hash}] — ${t.hint}`).join('\n');
+  const meta = d.chatMeta || {};
+  const myIds = new Set([cfg.personId, ...ownedExt.map((n) => (d.agents || []).find((a) => a.name === n)?.id).filter(Boolean)]);
+  const chatById = new Map(chat.map((m) => [m.id, m]));
+  const briefParts = [];
+  const myAsks = (meta.openAsks || []).filter((a) => a.waitingOn.some((w) => myIds.has(w)));
+  if (myAsks.length) briefParts.push('WAITING ON YOU: ' + myAsks.map((a) => `[${a.id}] ${a.by}: ${a.body.slice(0, 90)}`).join(' | '));
+  const myProm = (meta.promises || []).filter((p) => myIds.has(p.from));
+  if (myProm.length) briefParts.push('YOUR OPEN PROMISES (close with threaded DONE:): ' + myProm.map((p) => `[${p.id}] ${p.text.slice(0, 80)}`).join(' | '));
+  const myContra = Object.entries(d.claims || {}).filter(([mid, v]) => v.verdict === 'contradicted' && myIds.has(chatById.get(mid)?.from))
+    .map(([mid, v]) => `[${mid}] "${v.claim}" - ${v.detail}`);
+  if (myContra.length) briefParts.push('YOUR CONTRADICTED CLAIMS (fix or retract): ' + myContra.join(' | '));
+  if ((meta.standing || []).length) briefParts.push('STANDING DECISIONS: ' + meta.standing.map((s) => `${s.by}: ${s.verdict} | scope: ${s.scope}`).join(' ; '));
   const openAsks = (d.chatMeta?.openAsks || []).slice(-5).map((a) => `- [${a.id}] ${a.by} waiting on ${a.waitingOn.join(', ')}: ${a.body.slice(0, 100)}`).join('\n');
 
   const ctx = `HQ OFFICE (${cfg.server}) — you are working alongside the shared office as ${cfg.name}.
 ${unread.length} unread #office message(s)${unread.length > shown.length ? ` (${unread.length - shown.length} older not shown)` : ''}${forYou.length ? ` — ${forYou.length} addressed to ${cfg.name}` : ''}:
 ${shown.map(line).join('\n')}
 ${forYou.length ? `\nADDRESSED TO YOU:\n${forYou.map(line).join('\n')}` : ''}
-${openAsks ? `\nOPEN ASKS on the board:\n${openAsks}` : ''}
+${briefParts.length ? `\nYOUR STANDING STATE (computed - act on these first):\n${briefParts.map((x) => '- ' + x).join('\n')}` : ''}${openAsks ? `\nOPEN ASKS on the board:\n${openAsks}` : ''}
 ${memIdx ? `\nTEAM MEMORY STORE (read a topic: curl -s "${cfg.server}/api/memory/raw?topic=<topic>"):\n${memIdx}` : ''}
 
 HOW TO ACT (from this session, via Bash):
@@ -255,7 +267,7 @@ HOW TO ACT (from this session, via Bash):
   curl -s -X POST ${cfg.server}/api/chat -H "content-type: application/json" -d '{"personId":"${cfg.personId}","body":"...","replyTo":null}'
 - Write team memory: curl -s -X POST ${cfg.server}/api/memory -H "content-type: application/json" -d '{"personId":"${cfg.personId}","topic":"<slug>","content":"..."}'
 - Search project brain: curl -s "${cfg.server}/api/brain/search?q=<query>"  · read: curl -s "${cfg.server}/api/brain/read?ref=<root>:<path>"
-Markers sa chat (own line): WILL: <promise> · DONE: <receipt, threaded> · BLOCKED: <what> ON: <target> · DECISION-NEEDED: <question>.
+Markers sa chat (own line): WILL: <promise> · DONE: <receipt, threaded> · BLOCKED: <what> ON: <target> · DECISION-NEEDED: <question> · CLAIM: <text> | check: <http url == 200 | repo path contains \"s\" | git-tracked path | commit sha | halm HALM-n> — the office verifies claims against SHARED truth (pushed repo, vault, board); unpushed work stays unverifiable, kaya i-push bago i-claim.
 If you are a NAMED lane session (e.g. local-alex, devops-alex), prefix your #office posts with your lane in brackets — "[local-alex] ..." — so the office knows which of ${cfg.name}'s agents is speaking.
 To talk to a TEAMMATE'S agent across machines, @mention their character (e.g. @juls-claude, @doms-openclaw) in #office — their next session prompt surfaces it as addressed-to-them. Reply threaded when answering.
 REPORTING POLICY (Stan): every working session posts at least one progress line to #office before it ends — the Stop hook enforces this once per session. GROUND every report in facts: cite the git branch/commit, the HALM-<n> ticket id, and vault/brain refs where they apply — never vibes. Tag the human owner (@lee, @juls, …) when a call or unblock is needed, ESPECIALLY on a BLOCKED: line.

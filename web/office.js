@@ -22,7 +22,7 @@ const OfficeFloor = (() => {
 
   // village trees (visual + blocked tiles) — keep clear of buildings/roads
   const TREES = [
-    [10, 17], [13, 26], [56, 18], [60, 25], [70, 5], [75, 9],
+    [10, 17], [13, 26], [56, 18], [60, 25],
     [10, 45], [30, 45], [50, 45], [74, 44],
   ];
   // paved roads (cosmetic tile rects [x0, y0, x1, y1]) — the grass is all
@@ -30,9 +30,13 @@ const OfficeFloor = (() => {
   const ROADS = [
     [4, 13, 76, 14],                        // north road, right under the house doors
     [2, 31, 67, 31],                        // south road: HQ south door + workshop doors
-    [66, 14, 67, 36],                       // east avenue: shop / cafe doors
+    [66, 3, 67, 36],                        // east avenue: vault / shop / cafe doors
     [3, 15, 4, 31],                         // west lane
   ];
+
+  // brain-vault door state: per-viewer, survives refresh within the session
+  let vaultUnlocked = false;
+  try { vaultUnlocked = sessionStorage.getItem('hq.vaultAccess') === '1'; } catch { /* private mode */ }
 
   let canvas, ctx, S, M;                 // M = S.map from the server
   let GRID_W = 46, GRID_H = 28, WORLD_W, WORLD_H;
@@ -82,7 +86,7 @@ const OfficeFloor = (() => {
       ringBlock(b, [[b.door.x, b.door.y], [b.door.x + 1, b.door.y]]);
       for (const d of b.desks) block(d.x, d.y - 1);
     }
-    // HQ hall: south + east doors, front desk, hot desks, rack + brain core
+    // HQ hall: south + east doors, front desk, hot desks
     const hq = M.hq;
     ringBlock(hq, [
       [hq.doorS.x, hq.y1], [hq.doorS.x + 1, hq.y1],
@@ -90,7 +94,13 @@ const OfficeFloor = (() => {
     ]);
     block(M.frontDesk.x, M.frontDesk.y - 1);
     for (const d of M.hotDesks) block(d.x, d.y - 1);
-    block(hq.rack.x, hq.rack.y); block(hq.core.x, hq.core.y);
+    // brain vault: SEALED unless this viewer authenticated at the door
+    if (M.vault) {
+      const v = M.vault;
+      ringBlock(v, vaultUnlocked ? [[v.door.x, v.door.y], [v.door.x, v.door.y + 1]] : []);
+      for (const rk of v.racks) block(rk.x, rk.y);
+      block(v.core.x, v.core.y);
+    }
     // conference zone (inside the HQ hall, no walls): the boardroom table
     // + the plants flanking the TV; chairs stay walkable so people can sit
     const m = M.meeting;
@@ -470,6 +480,35 @@ const OfficeFloor = (() => {
       ctx.fillRect(sp.counter.x0 * TILE + 5, sp.counter.y0 * TILE - 2, 4, 4);
       pixelLabel(sp.label, sp.x0 * TILE + 12, (sp.y0 + 1) * TILE + 8, 'rgba(120,105,170,0.8)');
     }
+    // brain vault — high-tech data center: dark floor with a glowing cyan
+    // grid, blinking rack rows, the big core, and an access-controlled door
+    if (M.vault) {
+      const v = M.vault;
+      for (let y = v.y0 + 1; y < v.y1; y++) for (let x = v.x0 + 1; x < v.x1; x++) {
+        ctx.fillStyle = (x + y) % 2 ? '#20252F' : '#1C2129';
+        ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
+      }
+      ctx.strokeStyle = 'rgba(110,205,225,0.10)'; ctx.lineWidth = 1;
+      for (let x = v.x0 + 1; x < v.x1; x += 2) {
+        ctx.beginPath(); ctx.moveTo(x * TILE + 0.5, (v.y0 + 1) * TILE); ctx.lineTo(x * TILE + 0.5, v.y1 * TILE); ctx.stroke();
+      }
+      for (let y = v.y0 + 1; y < v.y1; y += 2) {
+        ctx.beginPath(); ctx.moveTo((v.x0 + 1) * TILE, y * TILE + 0.5); ctx.lineTo(v.x1 * TILE, y * TILE + 0.5); ctx.stroke();
+      }
+      for (const rk of v.racks) drawRack(rk.x, rk.y, now);
+      drawVaultCore(v.core.x, v.core.y, now);
+      // the sealed door: steel slab over the two door tiles + status LED
+      const ddx = v.x0 * TILE, ddy = v.door.y * TILE;
+      if (!vaultUnlocked) {
+        ctx.fillStyle = '#333B45'; ctx.fillRect(ddx + 2, ddy + 1, TILE - 4, TILE * 2 - 2);
+        ctx.fillStyle = '#242B33'; ctx.fillRect(ddx + 6, ddy + 3, 4, TILE * 2 - 6);
+      }
+      const led = 0.55 + 0.35 * Math.sin(now / (vaultUnlocked ? 900 : 350));
+      ctx.fillStyle = vaultUnlocked ? `rgba(108,189,146,${led})` : `rgba(229,134,126,${led})`;
+      ctx.fillRect(ddx + 5, ddy - 6, 6, 4);
+      pixelLabel(vaultUnlocked ? 'OPEN' : 'LOCKED', ddx - 4, ddy - 9, vaultUnlocked ? 'rgba(108,189,146,0.9)' : 'rgba(229,134,126,0.9)');
+      pixelLabel(v.label, (v.x0 + 1) * TILE + 2, (v.y0 + 1) * TILE + 8, 'rgba(110,205,225,0.75)');
+    }
     // cafeteria fixtures — steel counter + vending machine (inside the walls)
     ctx.fillStyle = '#9AA5B1'; ctx.fillRect((cf.x1 - 1) * TILE, (cf.y0 + 1) * TILE, TILE, 4 * TILE);
     ctx.fillStyle = '#1C232B'; ctx.fillRect((cf.x1 - 1) * TILE + 3, (cf.y0 + 1) * TILE + 3, 10, 8);
@@ -493,10 +532,8 @@ const OfficeFloor = (() => {
     for (const d of M.hotDesks) if (deskOwnerAgent(d)) drawDesk(d, deskBusy(d), now);
     drawDesk(M.frontDesk, deskBusy(M.frontDesk), now);
     pixelLabel('FRONT DESK', M.frontDesk.x * TILE - 10, (M.frontDesk.y - 1) * TILE - 3);
-    // trees + data archive: server rack + the project brain core (in HQ)
+    // trees
     for (const [tx, ty] of TREES) drawTree(tx, ty);
-    drawRack(hq.rack.x, hq.rack.y, now);
-    drawBrainCore(hq.core.x, hq.core.y, now);
   }
 
   function shade(hex) {
@@ -511,7 +548,7 @@ const OfficeFloor = (() => {
       if (ringB(r)) return true;
     }
     for (const b of M.bays) if (ringB(b)) return true;
-    for (const b of [M.hq, M.cafe, M.shop]) if (ringB(b)) return true;
+    for (const b of [M.hq, M.cafe, M.shop, M.vault].filter(Boolean)) if (ringB(b)) return true;
     return false;
 
     function ringB(b) {
@@ -599,6 +636,28 @@ const OfficeFloor = (() => {
     ctx.fillStyle = '#9482D3';
     ctx.fillRect(x - 2, y - 11, 1.5, 1.5); ctx.fillRect(x + 0.5, y - 8.5, 1.5, 1.5); ctx.fillRect(x - 1, y - 9.5, 1, 1);
     pixelLabel('PROJECT BRAIN', x - 17, y + 12, 'rgba(78,147,166,0.75)');
+  }
+  function drawVaultCore(tx, ty, now) {
+    // the centralized brain: a big pulsing core with orbiting data rings
+    const x = tx * TILE + 8, y = ty * TILE + 8;
+    const p = (Math.sin(now / 500) + 1) / 2;
+    ctx.fillStyle = '#39414D'; ctx.fillRect(x - 7, y + 4, 14, 5);
+    ctx.fillStyle = `rgba(110,205,225,${0.10 + 0.16 * p})`;
+    ctx.beginPath(); ctx.arc(x, y - 6, 13 + 3 * p, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#6ECDE1';
+    ctx.beginPath(); ctx.arc(x, y - 6, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,255,255,${0.35 + 0.4 * p})`; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(x, y - 6, 7, 0, Math.PI * 2); ctx.stroke();
+    // two counter-rotating data rings
+    for (const [rr, speed, off] of [[11, 900, 0], [14, -1400, 2]]) {
+      const a0 = (now / speed) + off;
+      ctx.strokeStyle = 'rgba(110,205,225,0.7)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y - 6, rr, a0, a0 + 1.1); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y - 6, rr, a0 + Math.PI, a0 + Math.PI + 1.1); ctx.stroke();
+    }
+    ctx.fillStyle = '#9482D3';
+    ctx.fillRect(x - 3, y - 9, 2, 2); ctx.fillRect(x + 1, y - 5, 2, 2); ctx.fillRect(x - 1, y - 7, 1.5, 1.5);
+    pixelLabel('PROJECT BRAIN', x - 17, y + 15, 'rgba(110,205,225,0.85)');
   }
   function drawRack(tx, ty, now) {
     // server rack with blinking status LEDs (sits on an already-blocked tile)
@@ -808,10 +867,20 @@ const OfficeFloor = (() => {
       const cam = camera();
       const wx = (ev.clientX - r.left - cam.ox) / cam.zoom;
       const wy = (ev.clientY - r.top - cam.oy) / cam.zoom;
-      // brain core terminal (in the HQ hall, beside the server rack)
-      if (M.hq && Math.hypot(wx - (M.hq.core.x * TILE + 8), wy - (M.hq.core.y * TILE + 2)) < 14) {
-        window.openBrain?.();
-        return;
+      // brain vault door: locked → the access keypad; unlocked → walk in
+      if (M.vault) {
+        const v = M.vault;
+        if (!vaultUnlocked
+          && wx >= v.x0 * TILE - 8 && wx <= (v.x0 + 1) * TILE + 8
+          && wy >= v.door.y * TILE - 12 && wy <= (v.door.y + 2) * TILE + 4) {
+          window.openVaultDoor?.();
+          return;
+        }
+        // the core inside opens the archive terminal
+        if (Math.hypot(wx - (v.core.x * TILE + 8), wy - (v.core.y * TILE + 2)) < 16) {
+          window.openBrain?.();
+          return;
+        }
       }
       // hall billboard (the wall TV under the conference zone)
       if (M.hq && M.meeting) {
@@ -943,5 +1012,10 @@ const OfficeFloor = (() => {
     onPersonMoved: (personId) => { /* position read from S.people each frame */ },
     setSelected: (id) => { selectedId = id; },
     setMe: (personId) => { me = personId; },
+    setVaultUnlocked: (u) => {
+      vaultUnlocked = !!u;
+      try { sessionStorage.setItem('hq.vaultAccess', u ? '1' : ''); } catch { /* private mode */ }
+      buildWalkGrid();
+    },
   };
 })();
