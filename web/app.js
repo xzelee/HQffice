@@ -32,8 +32,8 @@ const SHIRTS = ['#D96A62', '#4F9FAF', '#5CA97A', '#DCAB3C', '#9482D3', '#D99168'
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 // Status labels read from the user's side (munder-difflin convention)
-const STATUS_LABEL = { idle: 'idle', thinking: 'working', working: 'working', over_budget: 'over budget' };
-const STATUS_COLOR = { idle: '#A199AB', thinking: '#4F9FAF', working: '#DCAB3C', over_budget: '#D96A62' };
+const STATUS_LABEL = { idle: 'idle', thinking: 'working', working: 'working', over_budget: 'over budget', online: 'online', connected: 'connected', offline: 'offline' };
+const STATUS_COLOR = { idle: '#A199AB', thinking: '#4F9FAF', working: '#DCAB3C', over_budget: '#D96A62', online: '#4E9E74', connected: '#6FB4C6', offline: '#84858C' };
 
 // ------------------------------------------------------------- bootstrap
 async function boot() {

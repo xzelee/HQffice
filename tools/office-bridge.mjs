@@ -103,7 +103,14 @@ if (mode === 'check') {
     const me = (d.people || []).find((p) => p.id === cfg.personId);
     if (!me) { console.error(`❌ server reachable pero WALA na ang person id mo — re-run setup (na-reset siguro ang office).`); process.exit(1); }
     const myExt = (d.agents || []).filter((a) => a.external && a.ownerId === cfg.personId);
-    console.log(`✅ server reachable · person OK (${me.name})`);
+    // Announce ourselves: running check (or the installer) should make you
+    // appear on the floor immediately — "did my install work" becomes visible
+    // to the team without waiting for the first Claude session.
+    await api(cfg, '/api/presence', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ personId: cfg.personId, kind: 'claude', label: 'installed' }),
+    }).catch(() => { });
+    console.log(`✅ server reachable · person OK (${me.name}) · announced to the office`);
     console.log(`   your floor characters: ${myExt.map((a) => `${a.name} [${a.status}]`).join(', ') || '(none yet — first hook heartbeat creates one)'}`);
     console.log(`   #office messages: ${(d.chat || []).length} · memory topics: ${(d.memoryStore || []).length}`);
     console.log('kung wala ka pa ring nakikita sa Claude: (1) bagong session (claude -c) — hooks load at start; (2) check ang hook path sa ~/.claude/settings.json.');

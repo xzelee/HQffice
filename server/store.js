@@ -410,15 +410,26 @@ export function heartbeatAgent(id, label = '') {
   return agent;
 }
 
-export function expireStaleAgentPings(maxAgeMs = 90000) {
+// Three presence tiers, so "installed but idle" never reads as "not set up":
+//   online    — pinged within 90s (a session is actively working right now)
+//   connected — pinged within 24h (bridge is installed and working)
+//   offline   — never pinged, or silent for over a day
+const ONLINE_MS = 90 * 1000;
+const CONNECTED_MS = 24 * 60 * 60 * 1000;
+
+export function expireStaleAgentPings(maxAgeMs = ONLINE_MS) {
   let changed = false;
   for (const a of state.agents) {
-    if (a.external && a.status === 'online' && Date.now() - (a.lastPingTs || 0) > maxAgeMs) {
-      a.status = 'offline';
-      emit('agent_status', { agentId: a.id, status: 'offline', detail: '' });
+    if (!a.external) continue;
+    const age = Date.now() - (a.lastPingTs || 0);
+    const want = !a.lastPingTs ? 'offline' : age <= maxAgeMs ? 'online' : age <= CONNECTED_MS ? 'connected' : 'offline';
+    if (a.status !== want) {
+      a.status = want;
+      emit('agent_status', { agentId: a.id, status: want, detail: '' });
       changed = true;
     }
   }
+  if (changed) saveAgents();
   return changed;
 }
 
