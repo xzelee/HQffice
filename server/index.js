@@ -9,11 +9,15 @@ import os from 'node:os';
 import { initEventLog, emit, emitTransient, subscribe, recentEvents } from './eventlog.js';
 import {
   WORKSPACE, MAP, initStore, listAgents, getAgent, createAgent, updateAgent, removeAgent,
-  listTasks, createTask, updateTask, getOrchestrator, readBlackboard,
+  setAgentSession, listTasks, createTask, updateTask, getOrchestrator, readBlackboard,
   listPeople, getPerson, createPerson, updatePerson, setPersonPresence, setPersonPos,
   setPersonSessions, expireStaleSessions,
 } from './store.js';
-import { sendMessage, pendingCounts, pump } from './router.js';
+import { sendMessage, pendingCounts, pump, setPaused, isPaused } from './router.js';
+import { initChat, postChat, recentChat, chatDerived, rotateChat } from './chatroom.js';
+import { initBrain, getBrain, setBrain, listBrain, readBrain, searchBrain } from './brain.js';
+import { initMemStore, listMemoryStore } from './memstore.js';
+import { initTicketSync, syncTickets } from './ticketsync.js';
 import { initUsage, usageSummary } from './usage.js';
 import { initRuntime, ensureDefaultRoster, MODEL_CHOICES } from './runtime.js';
 import { ROLE_PRESETS } from './roles.js';
@@ -32,9 +36,13 @@ const WEB_DIR = [
 
 initEventLog(WORKSPACE);
 initStore();
+initChat(WORKSPACE);
+initBrain(WORKSPACE);
+initMemStore(WORKSPACE);
 initUsage(WORKSPACE);
 initRuntime();
 ensureDefaultRoster();
+initTicketSync();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -54,6 +62,11 @@ app.get('/api/state', (_req, res) => {
     usage: usageSummary(),
     blackboard: readBlackboard(),
     pending: pendingCounts(),
+    chat: recentChat(200),
+    chatMeta: chatDerived(),
+    schedulerPaused: isPaused(),
+    brain: getBrain(),
+    memoryStore: listMemoryStore(),
     models: MODEL_CHOICES,
     presets: ROLE_PRESETS,
     events: recentEvents(150),
@@ -114,6 +127,87 @@ app.post('/api/agents/:id/message', (req, res) => {
   if (!body) return res.status(400).json({ error: 'body required' });
   const out = sendMessage({ from: 'user', to: agent.id, act: 'request', body });
   res.json(out);
+});
+
+// --- chatroom: humans post to #office ----------------------------------
+app.post('/api/chat', (req, res) => {
+  const { personId, body, replyTo } = req.body || {};
+  if (!body) return res.status(400).json({ error: 'body required' });
+  const person = personId ? getPerson(personId) : null;
+  const out = postChat({
+    from: person ? person.id : 'user',
+    fromKind: person ? 'person' : 'user',
+    name: person ? person.name : 'user',
+    body,
+    replyTo: replyTo || null,
+  });
+  res.json({ ok: true, id: out.msg.id, woke: out.woke });
+});
+
+// Controls are localhost-only (the lab's rule): the server binds 0.0.0.0
+// for the LAN, but ops that speak as others or pause the office belong to
+// whoever runs the host machine.
+function localOnly(req, res, next) {
+  const ip = req.socket.remoteAddress || '';
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return next();
+  res.status(403).json({ error: 'controls are localhost-only — run this from the host machine' });
+}
+
+// Controls: post to #office as any agent or lane (the lab's "post to
+// channel" control — appends, never edits).
+app.post('/api/chat/as', localOnly, (req, res) => {
+  const { agentId, body, replyTo } = req.body || {};
+  if (!body) return res.status(400).json({ error: 'body required' });
+  const agent = agentId ? getAgent(agentId) : null;
+  if (agentId && !agent) return res.status(404).json({ error: 'no such agent' });
+  const out = agent
+    ? postChat({ from: agent.id, fromKind: 'agent', name: agent.name, body, replyTo: replyTo || null })
+    : postChat({ from: 'user', fromKind: 'user', name: 'user', body, replyTo: replyTo || null });
+  res.json({ ok: true, id: out.msg.id, woke: out.woke });
+});
+
+// Controls: archive rotation for the chat log.
+app.post('/api/chat/rotate', localOnly, (req, res) => {
+  res.json(rotateChat(Math.max(20, +req.body?.keep || 100)));
+});
+
+// Controls: pause/resume the turn scheduler (mail is held, not dropped).
+app.post('/api/scheduler', localOnly, (req, res) => {
+  res.json({ paused: setPaused(!!req.body?.paused) });
+});
+
+// Controls: configure the project brain (read-only knowledge roots). A brain
+// change alters every agent's system prompt, so all sessions restart fresh.
+app.post('/api/brain', localOnly, (req, res) => {
+  try {
+    const out = setBrain(req.body?.brain ?? req.body ?? null);
+    for (const a of listAgents()) setAgentSession(a.id, null);
+    res.json({ brain: out });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// Brain browser: read-only endpoints behind the BRAIN CORE terminal on the
+// floor. Same bounded reads every agent already has (brain_list / brain_read
+// / brain_search) — office-wide like the rest of the dashboard, no write path.
+app.get('/api/brain/list', (req, res) => {
+  try { res.json({ listing: listBrain(req.query.ref || null) }); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.get('/api/brain/read', (req, res) => {
+  try { res.json({ ref: req.query.ref, body: readBrain(req.query.ref, +req.query.offset || 1, +req.query.limit || 300) }); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+app.get('/api/brain/search', (req, res) => {
+  try { res.json({ hits: searchBrain(req.query.q, req.query.root || null) }); }
+  catch (e) { res.status(400).json({ error: String(e.message || e) }); }
+});
+
+// Controls: re-sync the HALM ticket mirror from the brain vault on demand.
+app.post('/api/tasks/sync', localOnly, (_req, res) => {
+  try { res.json(syncTickets()); }
+  catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
 // --- tasks: dashboard -> orchestrator ----------------------------------

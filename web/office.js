@@ -74,8 +74,8 @@ const OfficeFloor = (() => {
     // hot desks + front desk furniture
     for (const d of M.hotDesks) block(d.x, d.y - 1);
     block(M.frontDesk.x, M.frontDesk.y - 1);
-    // plants
-    block(2, GRID_H - 3); block(33, 9);
+    // plants + data archive (server rack + brain core)
+    block(2, GRID_H - 3); block(33, 9); block(35, 9);
   }
 
   function walkable(x, y) { return x >= 0 && y >= 0 && x < GRID_W && y < GRID_H && walk[y][x]; }
@@ -251,64 +251,95 @@ const OfficeFloor = (() => {
   }
 
   function roomTint(i) {
-    const tints = ['#EFE6C8', '#EAE4CE', '#EFE0C4', '#E9E6D2', '#F0E2C2'];
+    // lab bay tints — cool, desaturated
+    const tints = ['#DCE6EE', '#DEE9E3', '#E2E1ED', '#DFE8EA', '#E7E4DB'];
     return tints[i % tints.length];
   }
 
   function drawMap(now) {
-    // base floor
+    // base floor — cool lab tile
     for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) {
-      ctx.fillStyle = (x + y) % 2 ? '#EFE6C8' : '#EAE0BE';
+      ctx.fillStyle = (x + y) % 2 ? '#E9ECEF' : '#E1E5EA';
       ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
     }
-    // room floors
+    // room floors (personal lab bays)
     for (const r of M.rooms) {
       for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) {
         ctx.fillStyle = (x + y) % 2 ? roomTint(r.index) : shade(roomTint(r.index));
         ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
       }
     }
-    // meeting + cafeteria floors
+    // meeting room = mission control (dark slate) + cafeteria floors
     const m = M.meeting, cf = M.cafe;
     for (let y = m.y0 + 1; y < m.y1; y++) for (let x = m.x0 + 1; x < m.x1; x++) {
-      ctx.fillStyle = (x + y) % 2 ? '#DCE4D2' : '#D4DECA';
+      ctx.fillStyle = (x + y) % 2 ? '#3E4652' : '#39404B';
       ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
     }
     for (let y = cf.y0; y <= cf.y1; y++) for (let x = cf.x0; x <= cf.x1; x++) {
-      ctx.fillStyle = (x + y) % 2 ? '#E8D8B0' : '#E2D0A4';
+      ctx.fillStyle = (x + y) % 2 ? '#EAE5DA' : '#E3DDD0';
       ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
     }
-    // walls from the walk grid
+    // walls from the walk grid — brushed steel
     for (let y = 0; y < GRID_H; y++) for (let x = 0; x < GRID_W; x++) {
       if (!walk[y][x] && isWallLike(x, y)) {
-        ctx.fillStyle = '#8B6F47';
+        ctx.fillStyle = '#55616E';
         ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
-        ctx.fillStyle = '#7A6040'; ctx.fillRect(x * TILE, y * TILE + TILE - 4, TILE, 4);
+        ctx.fillStyle = '#47525E'; ctx.fillRect(x * TILE, y * TILE + TILE - 4, TILE, 4);
       }
     }
-    // entrance mat
-    ctx.fillStyle = '#C9A66B'; ctx.fillRect(M.entrance.x * TILE, (GRID_H - 1) * TILE, TILE * 2, TILE);
-    // meeting table + banner
-    drawTable(m.table.x0 * TILE, m.table.y0 * TILE, (m.table.x1 - m.table.x0 + 1) * TILE, (m.table.y1 - m.table.y0 + 1) * TILE, '#B08D5F');
+    // space windows on the top wall above each lab bay
+    for (const r of M.rooms) {
+      const wx = Math.floor((r.x0 + r.x1) / 2) - 1;
+      for (let i = 0; i < 2; i++) {
+        const x = (wx + i) * TILE;
+        ctx.fillStyle = '#0E1B33'; ctx.fillRect(x + 2, 3, TILE - 4, 10);
+        ctx.fillStyle = 'rgba(234,242,255,0.9)';
+        ctx.fillRect(x + 5, 6, 1, 1); ctx.fillRect(x + 9, 10, 1, 1); ctx.fillRect(x + 11, 5, 1, 1);
+      }
+    }
+    // entrance — caution-striped airlock mat
+    const ex = M.entrance.x * TILE, ey = (GRID_H - 1) * TILE;
+    ctx.fillStyle = '#D9B23C'; ctx.fillRect(ex, ey, TILE * 2, TILE);
+    ctx.fillStyle = '#2B2F36';
+    for (let i = 0; i < 4; i++) ctx.fillRect(ex + 2 + i * 8, ey + 2, 4, TILE - 4);
+    // mission control: console table with glowing rim + live blips
+    const tx0 = m.table.x0 * TILE, ty0 = m.table.y0 * TILE;
+    const tw = (m.table.x1 - m.table.x0 + 1) * TILE, th = (m.table.y1 - m.table.y0 + 1) * TILE;
+    drawTable(tx0, ty0, tw, th, '#2E3640');
+    ctx.strokeStyle = `rgba(110,205,225,${0.5 + 0.3 * Math.sin(now / 800)})`;
+    ctx.lineWidth = 1; ctx.strokeRect(tx0 + 2.5, ty0 + 2.5, tw - 5, th - 5);
+    for (let i = 0; i < 5; i++) {
+      const on = Math.sin(now / 450 + i * 1.9) > 0.2;
+      ctx.fillStyle = on ? '#6ECDE1' : '#465361';
+      ctx.fillRect(tx0 + 6 + i * 9, ty0 + 6, 4, 3);
+    }
+    // telemetry wall screen across the mission-control top wall
+    const sx0 = (m.x0 + 1) * TILE, sw = (m.x1 - m.x0 - 1) * TILE;
+    ctx.fillStyle = '#0B1118'; ctx.fillRect(sx0 + 2, m.y0 * TILE + 2, sw - 4, 12);
+    for (let i = 0; i < Math.floor((sw - 10) / 5); i++) {
+      const hgt = 2 + 6 * Math.abs(Math.sin(now / 700 + i * 0.9));
+      ctx.fillStyle = 'rgba(110,205,225,0.85)';
+      ctx.fillRect(sx0 + 5 + i * 5, m.y0 * TILE + 13 - hgt, 3, hgt);
+    }
     const meeters = S.people.filter((p) => p.online && p.pos && inMeeting(p.pos.x, p.pos.y));
     if (meeters.length >= 2) {
-      const glow = 0.25 + 0.15 * Math.sin(now / 300);
-      ctx.fillStyle = `rgba(220,171,60,${glow})`;
+      const glow = 0.18 + 0.12 * Math.sin(now / 300);
+      ctx.fillStyle = `rgba(110,205,225,${glow})`;
       ctx.fillRect((m.x0 + 1) * TILE, (m.y0 + 1) * TILE, (m.x1 - m.x0 - 1) * TILE, (m.y1 - m.y0 - 1) * TILE);
-      pixelLabel('● MEETING IN PROGRESS', m.x0 * TILE + 10, m.y0 * TILE - 4, '#D96A62');
+      pixelLabel('● BRIEFING IN PROGRESS', m.x0 * TILE + 10, m.y0 * TILE - 4, '#E58A80');
     }
-    pixelLabel(M.meeting.label, m.x0 * TILE + 12, m.y0 * TILE + 12);
+    pixelLabel('MISSION CONTROL', m.x0 * TILE + 12, (m.y0 + 1) * TILE + 8, 'rgba(190,215,230,0.6)');
     pixelLabel('CAFETERIA', cf.x0 * TILE + 4, cf.y0 * TILE + 10);
-    // cafeteria fixtures
-    ctx.fillStyle = '#A8875A'; ctx.fillRect(cf.x1 * TILE, cf.y0 * TILE, TILE, 4 * TILE);
-    ctx.fillStyle = INK; ctx.fillRect(cf.x1 * TILE + 3, cf.y0 * TILE + 3, 10, 8);
-    ctx.fillStyle = '#D96A62'; ctx.fillRect(cf.x1 * TILE + 5, cf.y0 * TILE + 5, 3, 3);
-    drawTable((cf.x0 + 2) * TILE, (cf.y0 + 3) * TILE, TILE * 2, TILE, '#B08D5F');
-    drawTable((cf.x0 + 2) * TILE, (cf.y0 + 5) * TILE, TILE * 2, TILE, '#B08D5F');
+    // cafeteria fixtures — steel counter + vending machine
+    ctx.fillStyle = '#9AA5B1'; ctx.fillRect(cf.x1 * TILE, cf.y0 * TILE, TILE, 4 * TILE);
+    ctx.fillStyle = '#1C232B'; ctx.fillRect(cf.x1 * TILE + 3, cf.y0 * TILE + 3, 10, 8);
+    ctx.fillStyle = '#E5867E'; ctx.fillRect(cf.x1 * TILE + 5, cf.y0 * TILE + 5, 3, 3);
+    drawTable((cf.x0 + 2) * TILE, (cf.y0 + 3) * TILE, TILE * 2, TILE);
+    drawTable((cf.x0 + 2) * TILE, (cf.y0 + 5) * TILE, TILE * 2, TILE);
     // rooms: labels + desks
     for (const r of M.rooms) {
       const owner = S.people.find((p) => p.roomIndex === r.index);
-      pixelLabel(owner ? `${owner.name.toUpperCase()}'S ROOM` : `ROOM ${r.index + 1}`, r.x0 * TILE + 3, r.y0 * TILE + 10);
+      pixelLabel(owner ? `${owner.name.toUpperCase()}'S LAB` : `LAB ${r.index + 1}`, r.x0 * TILE + 3, r.y0 * TILE + 10);
       drawDesk(r.ownerDesk, owner ? (owner.sessions?.length > 0) : false, now, true);
       for (const d of r.agentDesks) if (deskOwnerAgent(d)) drawDesk(d, deskBusy(d), now);
     }
@@ -316,8 +347,10 @@ const OfficeFloor = (() => {
     for (const d of M.hotDesks) if (deskOwnerAgent(d)) drawDesk(d, deskBusy(d), now);
     drawDesk(M.frontDesk, deskBusy(M.frontDesk), now);
     pixelLabel('FRONT DESK', M.frontDesk.x * TILE - 10, (M.frontDesk.y - 1) * TILE - 3);
-    // plants
-    drawPlant(2 * TILE + 8, (GRID_H - 3) * TILE + 14); drawPlant(33 * TILE + 8, 9 * TILE + 14);
+    // greenery + data archive: server rack + the project brain core
+    drawPlant(2 * TILE + 8, (GRID_H - 3) * TILE + 14);
+    drawRack(33, 9, now);
+    drawBrainCore(35, 9, now);
   }
 
   function shade(hex) {
@@ -348,15 +381,16 @@ const OfficeFloor = (() => {
   }
 
   function drawDesk(d, lit, now, isOwnerDesk = false) {
+    // lab bench: white worktop, steel edge, glowing console when busy
     const dx = d.x * TILE, dy = (d.y - 1) * TILE;
-    ctx.fillStyle = isOwnerDesk ? '#B99A6B' : '#C9A66B';
+    ctx.fillStyle = isOwnerDesk ? '#C4CDD6' : '#D2D9E0';
     ctx.fillRect(dx - 2, dy + 4, TILE + 4, TILE - 2);
-    ctx.strokeStyle = 'rgba(26,19,32,0.5)'; ctx.lineWidth = 1; ctx.strokeRect(dx - 1.5, dy + 4.5, TILE + 3, TILE - 3);
-    ctx.fillStyle = INK; ctx.fillRect(dx + 2, dy - 2, 12, 9);
-    ctx.fillStyle = lit ? '#9ecbf0' : '#3D2E4A';
+    ctx.strokeStyle = 'rgba(30,40,52,0.5)'; ctx.lineWidth = 1; ctx.strokeRect(dx - 1.5, dy + 4.5, TILE + 3, TILE - 3);
+    ctx.fillStyle = '#1C232B'; ctx.fillRect(dx + 2, dy - 2, 12, 9);
+    ctx.fillStyle = lit ? '#8FD8EA' : '#3A434F';
     ctx.fillRect(dx + 3, dy - 1, 10, 7);
     if (lit) {
-      ctx.fillStyle = '#2b5d80';
+      ctx.fillStyle = '#2E7D93';
       const t = now / 1000;
       for (let i = 0; i < 2; i++) {
         const ly = dy - 1 + ((t * 3.2 + i * 3.5) % 7);
@@ -365,16 +399,47 @@ const OfficeFloor = (() => {
     }
   }
 
-  function drawTable(x, y, w, h, color = '#C9A66B') {
+  function drawTable(x, y, w, h, color = '#D7DDE3') {
     ctx.fillStyle = color; ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = 'rgba(26,19,32,0.55)'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.strokeStyle = 'rgba(30,40,52,0.55)'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
   }
   function drawPlant(x, y) {
-    ctx.fillStyle = '#B0623C'; ctx.fillRect(x - 3, y - 3, 6, 4);
+    ctx.fillStyle = '#8D97A3'; ctx.fillRect(x - 3, y - 3, 6, 4);
     ctx.fillStyle = '#5CA97A';
     ctx.fillRect(x - 1, y - 9, 2, 6); ctx.fillRect(x - 4, y - 7, 3, 2); ctx.fillRect(x + 1, y - 8, 3, 2);
   }
-  function pixelLabel(text, x, y, color = 'rgba(26,19,32,0.35)') {
+  function drawBrainCore(tx, ty, now) {
+    // the project brain, physically in the office: a pulsing core on a
+    // pedestal. Click it to open the archive terminal (window.openBrain).
+    const x = tx * TILE + 8, y = ty * TILE + 10;
+    const p = (Math.sin(now / 600) + 1) / 2;
+    ctx.fillStyle = '#8D97A3'; ctx.fillRect(x - 5, y - 2, 10, 6);
+    ctx.fillStyle = '#6B7683'; ctx.fillRect(x - 5, y + 2, 10, 2);
+    // glow halo
+    ctx.fillStyle = `rgba(110,205,225,${0.10 + 0.14 * p})`;
+    ctx.beginPath(); ctx.arc(x, y - 9, 8 + 2 * p, 0, Math.PI * 2); ctx.fill();
+    // core orb
+    ctx.fillStyle = '#6ECDE1';
+    ctx.beginPath(); ctx.arc(x, y - 9, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,255,255,${0.4 + 0.4 * p})`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y - 9, 4.5, 0, Math.PI * 2); ctx.stroke();
+    // synapse pixels
+    ctx.fillStyle = '#9482D3';
+    ctx.fillRect(x - 2, y - 11, 1.5, 1.5); ctx.fillRect(x + 0.5, y - 8.5, 1.5, 1.5); ctx.fillRect(x - 1, y - 9.5, 1, 1);
+    pixelLabel('PROJECT BRAIN', x - 17, y + 12, 'rgba(78,147,166,0.75)');
+  }
+  function drawRack(tx, ty, now) {
+    // server rack with blinking status LEDs (sits on an already-blocked tile)
+    const x = tx * TILE, y = ty * TILE;
+    ctx.fillStyle = '#252B33'; ctx.fillRect(x + 2, y - 8, 12, 22);
+    ctx.strokeStyle = 'rgba(15,20,26,0.7)'; ctx.lineWidth = 1; ctx.strokeRect(x + 2.5, y - 7.5, 11, 21);
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = '#333B45'; ctx.fillRect(x + 4, y - 6 + i * 5, 8, 3);
+      ctx.fillStyle = Math.sin(now / 300 + i * 1.7) > 0 ? '#6CBD92' : '#2E4A3C';
+      ctx.fillRect(x + 10, y - 5.5 + i * 5, 1.5, 1.5);
+    }
+  }
+  function pixelLabel(text, x, y, color = 'rgba(30,40,52,0.4)') {
     ctx.font = '5px monospace'; ctx.fillStyle = color; ctx.textAlign = 'left';
     ctx.fillText(text, x, y);
   }
@@ -544,6 +609,11 @@ const OfficeFloor = (() => {
       const cam = camera();
       const wx = (ev.clientX - r.left - cam.ox) / cam.zoom;
       const wy = (ev.clientY - r.top - cam.oy) / cam.zoom;
+      // brain core terminal (fixed at tile 35,9 beside the server rack)
+      if (Math.hypot(wx - (35 * TILE + 8), wy - (9 * TILE + 2)) < 14) {
+        window.openBrain?.();
+        return;
+      }
       // nearest agent or person within reach
       let best = null, bestD = 20, bestKind = null;
       for (const a of S.agents) {

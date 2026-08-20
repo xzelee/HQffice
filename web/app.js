@@ -42,6 +42,9 @@ async function boot() {
   S.agents = data.agents; S.tasks = data.tasks; S.usage = data.usage; S.models = data.models;
   S.people = data.people || []; S.map = data.map;
   S.presets = data.presets || [];
+  S.chatroom = data.chat || [];
+  S.schedulerPaused = !!data.schedulerPaused;
+  S.brain = data.brain || null;
   S.events = data.events || [];
   rebuildChatsFromEvents(S.events);
 
@@ -54,6 +57,7 @@ async function boot() {
   OfficeFloor.init($('floorCanvas'), S);
   OfficeFloor.setMe(S.me);
   LiveGraph.init($('graphSvg'), S);
+  OfficeWorkflows.init($('workflowsView'), S);
   requestAnimationFrame(loop);
   // #spectate = view-only (wall display / TV mode): no character prompt
   if (!S.me && location.hash !== '#spectate') openCharacterCreator();
@@ -161,6 +165,35 @@ function handleEvent(ev) {
     }
     case 'people_sync': S.people = ev.people; if (S.selectedPerson) renderPersonPanel(); break;
     case 'budget_exhausted': renderStrip(); break;
+    case 'chat_message': {
+      const m = ev.message;
+      if (!S.chatroom.some((c) => c.id === m.id)) {
+        S.chatroom.push(m);
+        if (S.chatroom.length > 500) S.chatroom.splice(0, 100);
+        if (S.view === 'chat') renderRoom();
+        if (S.view === 'workflows') OfficeWorkflows.render();
+        if (S.view === 'controls') renderControls();
+        if (m.fromKind === 'agent') OfficeFloor.onNarration(m.from, m.body);
+        else OfficeFloor.onSay(m.from, m.body);
+      }
+      break;
+    }
+    case 'scheduler_paused': case 'scheduler_resumed':
+      S.schedulerPaused = ev.type === 'scheduler_paused';
+      if (S.view === 'controls') renderControls();
+      break;
+    case 'brain_configured':
+      S.brain = ev.brain || null;
+      if (S.view === 'controls') renderControls();
+      break;
+    case 'chat_rotated':
+      fetch('/api/state').then((r) => r.json()).then((d) => {
+        S.chatroom = d.chat || [];
+        if (S.view === 'chat') renderRoom();
+        if (S.view === 'workflows') OfficeWorkflows.render();
+        if (S.view === 'controls') renderControls();
+      });
+      break;
   }
   renderFeedLine(ev);
   if (S.selected && (ev.type === 'message_sent' || ev.type === 'agent_text')) renderChatLog();
@@ -207,8 +240,8 @@ function renderStrip() {
   $('btnNewAgentCard').onclick = openHireModal;
 }
 function lightOf(hex) {
-  const light = { '#D96A62': '#F3D3CD', '#4F9FAF': '#CFE5E9', '#5CA97A': '#D2E7DA', '#DCAB3C': '#F3E4BC', '#9482D3': '#E0DAF2', '#D99168': '#F3DACA' };
-  return light[hex] || '#F4E9C7';
+  // theme-aware tint: blends the agent color into the current surface
+  return `color-mix(in srgb, ${hex} 22%, var(--surface-2))`;
 }
 
 function renderTasks() {
@@ -258,6 +291,11 @@ const FEED_LABELS = {
   person_offline: (e) => `🚪 ${esc(e.name)} headed out`,
   person_said: (e) => `💬 <b>${esc(e.name || 'someone')}</b>: ${esc(e.text.slice(0, 120))}`,
   budget_exhausted: (e) => `🧯 <b>${esc(e.name)}</b> hit their token budget (${esc(String(e.budgetTokens))}) — mail held until it's raised`,
+  chat_message: (e) => `💬 <b>${esc(e.message.name)}</b> → #office: ${esc(e.message.body.slice(0, 100))}`,
+  chat_rotated: (e) => `🗃️ chat log rotated — ${e.archived} archived to ${esc(e.archiveFile)}, ${e.kept} kept live`,
+  scheduler_paused: () => `⏸ turn scheduler PAUSED — agent mail is held`,
+  scheduler_resumed: () => `▶ turn scheduler resumed`,
+  brain_configured: (e) => `🧠 project brain ${e.brain ? `set: <b>${esc(e.brain.name)}</b> (${Object.keys(e.brain.roots).join(', ')})` : 'cleared'} — agent sessions restart fresh`,
 };
 function feedLineHTML(ev) {
   const fn = FEED_LABELS[ev.type];
@@ -548,16 +586,360 @@ $('sayInput').addEventListener('keydown', (e) => {
 });
 
 // tabs
+const VIEWS = ['floor', 'graph', 'chat', 'workflows', 'controls'];
 $('tabFloor').onclick = () => setView('floor');
 $('tabGraph').onclick = () => setView('graph');
+$('tabChat').onclick = () => setView('chat');
+$('tabWorkflows').onclick = () => setView('workflows');
+$('tabControls').onclick = () => setView('controls');
 function setView(v) {
   S.view = v;
-  $('tabFloor').classList.toggle('active', v === 'floor');
-  $('tabGraph').classList.toggle('active', v === 'graph');
+  for (const name of VIEWS) {
+    const btn = $('tab' + name[0].toUpperCase() + name.slice(1));
+    if (btn) btn.classList.toggle('active', v === name);
+  }
   $('floorCanvas').classList.toggle('hidden', v !== 'floor');
   $('floorHint').classList.toggle('hidden', v !== 'floor');
+  $('sayInput').classList.toggle('hidden', v !== 'floor');
   $('graphSvg').classList.toggle('hidden', v !== 'graph');
+  $('chatRoom').classList.toggle('hidden', v !== 'chat');
+  $('workflowsView').classList.toggle('hidden', v !== 'workflows');
+  $('controlsView').classList.toggle('hidden', v !== 'controls');
+  if (v === 'chat') { renderRoom(); $('roomInput').focus(); }
+  if (v === 'workflows') OfficeWorkflows.render();
+  if (v === 'controls') renderControls();
 }
+
+// ------------------------------------------------------------- controls
+function renderControls() {
+  const view = $('controlsView');
+  view.innerHTML = `
+    <div class="wf-head">controls <span class="wf-sub">office operations — appends and holds, never edits or drops</span></div>
+    <div class="ctl-grid">
+      <div class="ctl-card">
+        <h3>post to #office as…</h3>
+        <div class="note">Seed context or speak for a lane — appends to the room like any post; @mentions wake as usual.</div>
+        <div class="ctl-row">
+          <select id="ctlAs">${[`<option value="">user (you)</option>`, ...S.agents.map((a) => `<option value="${a.id}">${esc(a.name)} — ${esc(a.role)}</option>`)].join('')}</select>
+          <input type="text" id="ctlReplyTo" placeholder="reply-to id (optional)" style="width:150px">
+        </div>
+        <textarea id="ctlBody" placeholder="Message body… markers (WILL:, BLOCKED: x ON: y, DECISION-NEEDED:) work here too"></textarea>
+        <div class="ctl-row"><button class="btn primary" id="ctlPost">post →</button><span class="note" id="ctlPostNote"></span></div>
+      </div>
+      <div class="ctl-card">
+        <h3>turn scheduler</h3>
+        <div class="note">Pausing holds all agent turns (mail queues, nothing is dropped) — a cost brake while you read or reorganize. Mentions and tasks resume delivery when you unpause.</div>
+        <div class="ctl-row">
+          <button class="btn ${S.schedulerPaused ? '' : 'danger'}" id="ctlPause">${S.schedulerPaused ? '▶ resume turns' : '⏸ pause all turns'}</button>
+          <span class="note">${S.schedulerPaused ? 'PAUSED — mail is being held' : 'running'}</span>
+        </div>
+      </div>
+      <div class="ctl-card">
+        <h3>chat log rotation</h3>
+        <div class="note">Archives all but the newest N messages to a dated file in workspace/. Ids are content hashes and cursors are timestamps, so threading and delivery survive rotation.</div>
+        <div class="ctl-row">
+          keep <input type="text" id="ctlKeep" value="100" style="width:64px">
+          <button class="btn" id="ctlRotate">archive older →</button>
+          <span class="note">${S.chatroom.length} messages live</span>
+        </div>
+      </div>
+      <div class="ctl-card">
+        <h3>project brain — centralized knowledge</h3>
+        ${S.brain ? `
+          <div class="note"><b>${esc(S.brain.name)}</b> — every agent answers project questions from this read-only brain (brain_search / brain_read / brain_list) and cites refs.</div>
+          <div class="note" style="font-family:var(--font-mono); font-size:11px;">
+            ${Object.entries(S.brain.roots).map(([k, r]) => `${esc(k)}: ${esc(r.path)} ${r.exists ? '✓' : '✗ MISSING'}`).join('<br>')}
+            ${S.brain.hub ? `<br>hub: ${esc(S.brain.hub)}` : ''}
+          </div>`
+      : '<div class="note">No brain configured — agents answer from their own context only.</div>'}
+        <div class="ctl-row">
+          <input type="text" id="ctlBrainName" placeholder="project name" value="${esc(S.brain?.name || '')}" style="width:150px">
+          <input type="text" id="ctlBrainHub" placeholder="hub ref e.g. vault:000-Hub.md" value="${esc(S.brain?.hub || '')}" style="width:210px">
+        </div>
+        <div class="ctl-row"><input type="text" id="ctlBrainVault" placeholder="vault path (Obsidian)" value="${esc(S.brain?.roots?.vault?.path || '')}" style="flex:1"></div>
+        <div class="ctl-row"><input type="text" id="ctlBrainRepo" placeholder="repo path (git clone)" value="${esc(S.brain?.roots?.repo?.path || '')}" style="flex:1"></div>
+        <div class="ctl-row"><button class="btn primary" id="ctlBrainSave">save brain →</button><span class="note">changing it restarts every agent's session</span></div>
+      </div>
+      <div class="ctl-card">
+        <h3>room facts</h3>
+        <div class="note" style="font-family:var(--font-mono); font-size:11.5px;">
+          messages live: ${S.chatroom.length}<br>
+          voices: ${new Set(S.chatroom.map((m) => m.from)).size}<br>
+          open asks: ${deriveRoomMeta().openAsks.length} · open promises: ${deriveRoomMeta().promises.length}<br>
+          blocked: ${deriveRoomMeta().blockers.length} · needs you: ${deriveRoomMeta().decisions.length}<br>
+          scheduler: ${S.schedulerPaused ? 'PAUSED' : 'running'}
+        </div>
+      </div>
+    </div>`;
+  $('ctlPost').onclick = async () => {
+    const body = $('ctlBody').value.trim();
+    if (!body) return;
+    const asId = $('ctlAs').value;
+    const replyTo = $('ctlReplyTo').value.trim() || null;
+    const res = await fetch('/api/chat/as', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentId: asId || null, body, replyTo }),
+    });
+    const out = await res.json();
+    $('ctlBody').value = ''; $('ctlReplyTo').value = '';
+    $('ctlPostNote').textContent = out.ok ? `posted [${out.id}]${out.woke?.length ? ` — woke ${out.woke.length}` : ''}` : (out.error || 'failed');
+  };
+  $('ctlPause').onclick = async () => {
+    await fetch('/api/scheduler', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ paused: !S.schedulerPaused }),
+    });
+  };
+  $('ctlBrainSave').onclick = async () => {
+    const roots = {};
+    if ($('ctlBrainVault').value.trim()) roots.vault = $('ctlBrainVault').value.trim();
+    if ($('ctlBrainRepo').value.trim()) roots.repo = $('ctlBrainRepo').value.trim();
+    const res = await fetch('/api/brain', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ brain: Object.keys(roots).length ? { name: $('ctlBrainName').value.trim() || 'project', hub: $('ctlBrainHub').value.trim() || null, roots } : null }),
+    });
+    const out = await res.json();
+    if (out.error) { alert(out.error); return; }
+    S.brain = out.brain;
+    renderControls();
+  };
+  $('ctlRotate').onclick = async () => {
+    const keep = parseInt($('ctlKeep').value, 10) || 100;
+    if (!confirm(`Archive all but the newest ${keep} messages?`)) return;
+    await fetch('/api/chat/rotate', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keep }),
+    });
+  };
+}
+
+// ------------------------------------------------------------- #office room
+function chatBodyHTML(body) {
+  let html = esc(body).replace(/@([\w-]+)/g, (all, tok) => {
+    const t = tok.toLowerCase();
+    const hit = S.agents.find((a) => a.id.toLowerCase() === t || a.name.toLowerCase() === t);
+    return hit ? `<span class="mention">@${esc(hit.name)}</span>` : all;
+  });
+  // marker lines: WILL: / DONE: / DECISION-NEEDED: / DECISION:
+  html = html.replace(/^(WILL:)/gm, '<span class="mk will">$1</span>')
+    .replace(/^(DONE:)/gm, '<span class="mk done">$1</span>')
+    .replace(/^(DECISION-NEEDED:|DECISION:)/gm, '<span class="mk decision">$1</span>');
+  return html;
+}
+function chatMsgById(id) { return S.chatroom.find((m) => m.id === id); }
+function chatNameOf(m) {
+  if (!m) return '?';
+  const agent = m.fromKind === 'agent' ? S.agents.find((a) => a.id === m.from) : null;
+  return agent ? agent.name : m.name;
+}
+
+// Injection quarantine (mirror of the server's): markers inside code fences
+// or blockquotes are documentation, not intent.
+function chatAuthoritative(body) {
+  return String(body)
+    .replace(/```[\s\S]*?(```|$)/g, '')
+    .split('\n').filter((l) => !/^\s*>/.test(l)).join('\n');
+}
+window.chatAuthoritative = chatAuthoritative;
+
+// Mirror of the server's chatDerived(): a mention is an ask until the
+// mentioned agent replies IN THREAD; WILL: closes only on the author's
+// threaded DONE:; DECISION-NEEDED: closes on a human's threaded DECISION:.
+function deriveRoomMeta() {
+  const replies = new Map();
+  for (const m of S.chatroom) {
+    if (!m.replyTo) continue;
+    if (!replies.has(m.replyTo)) replies.set(m.replyTo, []);
+    replies.get(m.replyTo).push(m);
+  }
+  const openAsks = [], promises = [], decisions = [], blockers = [];
+  for (const m of S.chatroom) {
+    const rs = replies.get(m.id) || [];
+    if (m.mentions?.length) {
+      const waitingOn = m.mentions.filter((a) => !rs.some((r) => r.from === a));
+      if (waitingOn.length) openAsks.push({ ...m, waitingOn });
+    }
+    const auth = chatAuthoritative(m.body);
+    const will = auth.match(/^WILL:\s*(.+)$/m);
+    if (will) {
+      const own = rs.filter((r) => r.from === m.from);
+      const state = own.some((r) => /^DONE:/m.test(chatAuthoritative(r.body))) ? 'done' : own.length ? 'replied' : 'open';
+      if (state !== 'done') promises.push({ ...m, text: will[1], state });
+    }
+    const need = auth.match(/^DECISION-NEEDED:\s*(.+)$/m);
+    if (need && !rs.some((r) => r.fromKind !== 'agent' && /^DECISION:/m.test(chatAuthoritative(r.body)))) {
+      decisions.push({ ...m, text: need[1] });
+    }
+    const blk = auth.match(/^BLOCKED:\s*(.+?)\s+ON:\s*(.+?)\s*$/m);
+    if (blk && !blk[1].includes('<') && !blk[2].includes('<') && !rs.some((r) => r.from === m.from && /^DONE:/m.test(chatAuthoritative(r.body)))) {
+      const target = blk[2].trim();
+      const agent = S.agents.find((a) => a.id.toLowerCase() === target.toLowerCase() || a.name.toLowerCase() === target.toLowerCase());
+      blockers.push({ ...m, what: blk[1], target: agent ? agent.id : target, targetKind: agent ? 'agent' : 'external' });
+    }
+  }
+  return { openAsks, promises, decisions, blockers };
+}
+window.deriveRoomMeta = deriveRoomMeta;
+
+function agoStr(ts) {
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 60) return `${s | 0}s ago`;
+  if (s < 3600) return `${(s / 60) | 0}m ago`;
+  if (s < 86400) return `${(s / 3600) | 0}h ago`;
+  return `${(s / 86400) | 0}d ago`;
+}
+function chatColorOf(m) {
+  const agent = m.fromKind === 'agent' ? S.agents.find((a) => a.id === m.from) : null;
+  return agent ? agent.color : 'var(--ink-500)';
+}
+
+function renderRoomSide() {
+  const { openAsks, promises, decisions, blockers } = deriveRoomMeta();
+  const parts = [];
+
+  if (blockers.length) {
+    parts.push(`<div class="rs-head" style="color:var(--coral)">blocked <b>${blockers.length}</b></div>`);
+    for (const b of blockers.slice(-5)) {
+      parts.push(`<div class="rs-card">
+        <div class="meta"><span style="color:${chatColorOf(b)}; font-weight:600">${esc(chatNameOf(b))}</span><span>on ${esc(b.targetKind === 'agent' ? nameOf(b.target) : b.target)}</span><span>${agoStr(b.ts)}</span></div>
+        <div class="txt">${esc(b.what)}</div></div>`);
+    }
+  }
+
+  parts.push(`<div class="rs-head" style="color:var(--coral)">needs you <b>${decisions.length || ''}</b></div>`);
+  if (decisions.length) {
+    for (const d of decisions.slice(-6)) {
+      parts.push(`<div class="rs-card hot">
+        <div class="meta"><span style="color:${chatColorOf(d)}; font-weight:600">${esc(chatNameOf(d))}</span><span>[${esc(d.id)}]</span><span>${agoStr(d.ts)}</span></div>
+        <div class="txt">${esc(d.text)}</div>
+        <div class="row">
+          <button class="btn" style="color:var(--mint)" onclick="decideChat('${d.id}','GO')">GO</button>
+          <button class="btn" style="color:var(--coral)" onclick="decideChat('${d.id}','NO-GO')">NO-GO</button>
+          <button class="btn" onclick="setRoomReply('${d.id}')">reply…</button>
+        </div></div>`);
+    }
+  } else parts.push('<div class="rs-empty">nothing waiting on your call</div>');
+
+  parts.push(`<div class="rs-head">open asks <b>${openAsks.length || ''}</b></div>`);
+  if (openAsks.length) {
+    for (const a of openAsks.slice(-6)) {
+      parts.push(`<div class="rs-card">
+        <div class="meta"><span style="color:${chatColorOf(a)}; font-weight:600">${esc(chatNameOf(a))}</span><span>→ waiting on ${esc(a.waitingOn.map((id) => nameOf(id)).join(', '))}</span><span>${agoStr(a.ts)}</span></div>
+        <div class="txt" title="${esc(a.body)}">${esc(a.body.slice(0, 150))}</div></div>`);
+    }
+    parts.push('<div class="rs-empty">an ask closes only when the mentioned agent replies in-thread</div>');
+  } else parts.push('<div class="rs-empty">every mention has a threaded reply</div>');
+
+  parts.push(`<div class="rs-head">open promises <b>${promises.length || ''}</b></div>`);
+  if (promises.length) {
+    for (const p of promises.slice(-6)) {
+      parts.push(`<div class="rs-card">
+        <div class="meta"><span class="st" style="color:${p.state === 'replied' ? 'var(--sky)' : 'var(--lemon)'}">${p.state}</span><span style="color:${chatColorOf(p)}; font-weight:600">${esc(chatNameOf(p))}</span><span>[${esc(p.id)}]</span><span>${agoStr(p.ts)}</span></div>
+        <div class="txt">WILL: ${esc(p.text)}</div></div>`);
+    }
+    parts.push('<div class="rs-empty">closes only on the author’s threaded DONE: reply</div>');
+  } else parts.push('<div class="rs-empty">no unfinished promises</div>');
+
+  // who's in the room
+  const counts = new Map();
+  for (const m of S.chatroom) counts.set(m.from, (counts.get(m.from) || 0) + 1);
+  if (counts.size) {
+    parts.push('<div class="rs-head">who’s talking</div><div class="rs-card">');
+    for (const [from, n] of [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+      const m = S.chatroom.find((x) => x.from === from);
+      parts.push(`<div class="meta" style="margin-bottom:2px"><span style="color:${chatColorOf(m)}; font-weight:600">${esc(chatNameOf(m))}</span><span>${m.fromKind === 'agent' ? 'agent' : 'human'}</span><span style="margin-left:auto">${n} msg${n > 1 ? 's' : ''}</span></div>`);
+    }
+    parts.push('</div>');
+  }
+
+  parts.push(`<div class="rs-head">markers</div>
+    <div class="rs-card rs-guide">
+      <b>@Name</b> — wakes that agent<br>
+      <b>↩ reply</b> — threads; closes an ask<br>
+      <b>WILL:</b> — opens a tracked promise<br>
+      <b>DONE:</b> — in a threaded reply, closes it<br>
+      <b>DECISION-NEEDED:</b> — queues for a human
+    </div>`);
+
+  $('roomSide').innerHTML = parts.join('');
+}
+
+window.decideChat = async (id, verdict) => {
+  await fetch('/api/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ personId: S.me || null, body: `DECISION: ${verdict}.`, replyTo: id }),
+  });
+};
+
+function renderRoom() {
+  const log = $('roomLog');
+  const rows = [];
+  let lastDay = '';
+  for (const m of S.chatroom) {
+    const day = new Date(m.ts).toDateString();
+    if (day !== lastDay) {
+      lastDay = day;
+      rows.push(`<div class="day">— ${day === new Date().toDateString() ? 'today' : esc(day)} —</div>`);
+    }
+    const agent = m.fromKind === 'agent' ? S.agents.find((a) => a.id === m.from) : null;
+    const mine = m.from === S.me || (m.fromKind === 'user' && !S.me);
+    const who = agent ? agent.name : m.name;
+    const kind = m.fromKind === 'agent' ? (agent ? agent.role : 'agent') : (m.fromKind === 'person' ? 'teammate' : 'human');
+    const color = agent ? agent.color : 'var(--ink-700)';
+    const time = new Date(m.ts).toTimeString().slice(0, 8);
+    const parent = m.replyTo ? chatMsgById(m.replyTo) : null;
+    rows.push(`<div class="cmsg ${mine ? 'mine' : ''}" style="border-left-color:${agent ? agent.color : mine ? 'var(--sky)' : 'var(--ink-100)'}">
+      <div class="chead">
+        <span class="cwho" style="color:${color}">${esc(who)}</span><span class="ckind">${esc(kind)}</span><span class="cid">[${esc(m.id)}]</span>
+        <button class="rbtn" data-chat="${esc(m.id)}" title="reply in thread">↩ reply</button>
+        <span class="ctime">${time}</span>
+      </div>
+      ${m.replyTo ? `<span class="creply">↩ replying to ${parent ? `<b>${esc(chatNameOf(parent))}</b> [${esc(m.replyTo)}]: ${esc(parent.body.slice(0, 80))}` : `[${esc(m.replyTo)}]`}</span>` : ''}
+      <div class="cbody">${chatBodyHTML(m.body)}</div></div>`);
+  }
+  log.innerHTML = rows.length ? rows.join('')
+    : '<div style="color:var(--ink-500); font-size:13px; margin:auto;">Walang laman pa ang #office — start the conversation. Mention @Marlowe (or any agent) to wake them.</div>';
+  for (const el of log.querySelectorAll('[data-chat]')) {
+    el.onclick = () => setRoomReply(el.dataset.chat);
+  }
+  const people = new Set(S.chatroom.map((m) => m.from));
+  $('roomStats').textContent = `${S.chatroom.length} messages · ${people.size} voices`;
+  renderRoomSide();
+  log.scrollTop = log.scrollHeight;
+}
+
+let roomReplyTo = null;
+window.setRoomReply = (id) => setRoomReply(id);
+function setRoomReply(id) {
+  roomReplyTo = id;
+  const m = chatMsgById(id);
+  $('roomReplyBar').classList.remove('hidden');
+  $('roomReplyBar').innerHTML = `<span>↩ replying to [${esc(id)}]</span><span class="grow">${esc(chatNameOf(m))}: ${esc((m?.body || '').slice(0, 90))}</span><button class="btn" style="height:20px" id="btnCancelReply">✕</button>`;
+  $('btnCancelReply').onclick = clearRoomReply;
+  $('roomInput').focus();
+}
+function clearRoomReply() {
+  roomReplyTo = null;
+  $('roomReplyBar').classList.add('hidden');
+  $('roomReplyBar').innerHTML = '';
+}
+
+async function sendRoomPost() {
+  const body = $('roomInput').value.trim();
+  if (!body) return;
+  $('roomInput').value = '';
+  const replyTo = roomReplyTo;
+  clearRoomReply();
+  await fetch('/api/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ personId: S.me || null, body, replyTo }),
+  });
+}
+$('btnRoomSend').onclick = sendRoomPost;
+$('roomInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendRoomPost(); }
+  if (e.key === 'Escape') clearRoomReply();
+});
 
 // ------------------------------------------------------------- modal
 function openModal(title, fields, onSubmit) {

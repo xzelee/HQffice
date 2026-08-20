@@ -1,7 +1,6 @@
-/* Live graph view — agents as square neo-pixel nodes, messages as
+/* Live graph view — agents as soft square nodes, messages as
    act-colored weighted edges with traveling pulses. SVG, no deps.
-   Styled after munder-difflin's memory graph (hard offset shadows,
-   dot-grid paper, act-color legend). */
+   Minimal dot-grid paper, act-color legend, day/night aware. */
 'use strict';
 
 const LiveGraph = (() => {
@@ -9,8 +8,13 @@ const LiveGraph = (() => {
     request: '#4F9FAF', question: '#9482D3', inform: '#DCC58C',
     ack: '#5CA97A', escalate: '#D96A62',
   };
-  const INK = '#1A1320';
   const STATUS_COLORS = { idle: '#A199AB', thinking: '#4F9FAF', working: '#DCAB3C' };
+  // resolved per draw() so day/night switches apply live
+  function themeColors() {
+    return document.documentElement.dataset.theme === 'dark'
+      ? { paper: '#17181C', dot: '#26272D', ink: '#0B0C0E', text: '#C6C7CD', muted: '#6E6F76' }
+      : { paper: '#FAFAF8', dot: '#E2E1DC', ink: '#1E1F22', text: '#3F4045', muted: '#8A8B92' };
+  }
 
   let svg, S;
   let edges = new Map();     // "a|b" sorted pair -> {a, b, weight, lastAct, lastTs}
@@ -67,11 +71,13 @@ const LiveGraph = (() => {
     const w = r.width, h = r.height;
     if (needsLayout || !positions.size) { layout(w, h); needsLayout = false; }
 
+    const T = themeColors();
+    const INK = T.ink;
     const parts = [];
     // paper + dot grid
-    parts.push(`<rect width="100%" height="100%" fill="#FCFAF0"/>`);
+    parts.push(`<rect width="100%" height="100%" fill="${T.paper}"/>`);
     parts.push(`<defs><pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse">
-      <circle cx="1" cy="1" r="1" fill="#D9CFE0"/></pattern></defs>
+      <circle cx="1" cy="1" r="1" fill="${T.dot}"/></pattern></defs>
       <rect width="100%" height="100%" fill="url(#dots)"/>`);
 
     // edges
@@ -109,36 +115,35 @@ const LiveGraph = (() => {
       const x = pos.x - s / 2, y = pos.y - s / 2;
       const dim = selectedId && n.id !== selectedId && !isNeighbor(n.id, selectedId);
       parts.push(`<g data-node="${n.id}" style="cursor:pointer" opacity="${dim ? 0.25 : 1}">`);
-      parts.push(`<rect x="${x + 2}" y="${y + 2}" width="${s}" height="${s}" fill="${INK}"/>`);
-      parts.push(`<rect x="${x}" y="${y}" width="${s}" height="${s}" fill="${n.color}"
-        stroke="${INK}" stroke-width="${n.orch ? 2 : 1.5}"/>`);
-      if (n.orch || n.id === 'user') parts.push(`<rect x="${x + 3}" y="${y + 3}" width="${s - 6}" height="${s - 6}"
-        fill="none" stroke="${INK}" stroke-width="1"/>`);
+      parts.push(`<rect x="${x}" y="${y}" width="${s}" height="${s}" rx="6" fill="${n.color}"
+        stroke="${INK}" stroke-width="${n.orch ? 2 : 1.5}" stroke-opacity="0.35"/>`);
+      if (n.orch || n.id === 'user') parts.push(`<rect x="${x + 3}" y="${y + 3}" width="${s - 6}" height="${s - 6}" rx="4"
+        fill="none" stroke="${INK}" stroke-width="1" stroke-opacity="0.3"/>`);
       if (n.status) {
         const sc = STATUS_COLORS[n.status] || '#A199AB';
-        parts.push(`<rect x="${x - 3}" y="${y - 3}" width="${s + 6}" height="${s + 6}"
+        parts.push(`<rect x="${x - 3}" y="${y - 3}" width="${s + 6}" height="${s + 6}" rx="8"
           fill="none" stroke="${sc}" stroke-width="1.5"/>`);
       }
-      if (n.id === selectedId) parts.push(`<rect x="${x - 6}" y="${y - 6}" width="${s + 12}" height="${s + 12}"
-        fill="none" stroke="${INK}" stroke-width="1" stroke-dasharray="3 2"/>`);
+      if (n.id === selectedId) parts.push(`<rect x="${x - 6}" y="${y - 6}" width="${s + 12}" height="${s + 12}" rx="10"
+        fill="none" stroke="${T.text}" stroke-width="1" stroke-dasharray="3 2"/>`);
       parts.push(`<text x="${pos.x}" y="${y + s + 14}" text-anchor="middle"
-        font-family="JetBrains Mono, monospace" font-size="10" fill="${INK}">${escapeXml(n.name.slice(0, 16))}</text>`);
+        font-family="JetBrains Mono, monospace" font-size="10" fill="${T.text}">${escapeXml(n.name.slice(0, 16))}</text>`);
       parts.push(`</g>`);
     }
 
     // legend
     const acts = Object.entries(ACT_COLORS);
     parts.push(`<g transform="translate(14, ${h - 20 - acts.length * 14})">`);
-    parts.push(`<text x="0" y="-6" font-family="'Press Start 2P', monospace" font-size="7" fill="#6B5878">MESSAGE ACTS</text>`);
+    parts.push(`<text x="0" y="-6" font-family="Inter, sans-serif" font-weight="600" font-size="8" letter-spacing="1" fill="${T.muted}">MESSAGE ACTS</text>`);
     acts.forEach(([act, color], i) => {
-      parts.push(`<rect x="0" y="${i * 14}" width="9" height="3" fill="${color}"/>
-        <text x="14" y="${i * 14 + 5}" font-family="JetBrains Mono, monospace" font-size="9" fill="#3D2E4A">${act}</text>`);
+      parts.push(`<rect x="0" y="${i * 14}" width="9" height="3" rx="1.5" fill="${color}"/>
+        <text x="14" y="${i * 14 + 5}" font-family="JetBrains Mono, monospace" font-size="9" fill="${T.text}">${act}</text>`);
     });
     parts.push(`</g>`);
 
     if (!edges.size) {
       parts.push(`<text x="${w / 2}" y="${h / 2}" text-anchor="middle"
-        font-family="JetBrains Mono, monospace" font-size="12" fill="#6B5878">No messages yet — the office is quiet. Give someone a task.</text>`);
+        font-family="JetBrains Mono, monospace" font-size="12" fill="${T.muted}">No messages yet — the office is quiet. Give someone a task.</text>`);
     }
 
     svg.innerHTML = parts.join('');

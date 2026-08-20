@@ -8,10 +8,13 @@ import { z } from 'zod';
 import { emit } from './eventlog.js';
 import {
   WORKSPACE, listAgents, getAgent, createAgent, removeAgent, getOrchestrator,
-  setAgentSession, setAgentStatus, readBlackboard, appendBlackboard,
+  setAgentSession, setAgentStatus, setAgentChatCursor, readBlackboard, appendBlackboard,
   readMemory, appendMemory, listTasks, updateTask, getTask,
 } from './store.js';
 import { sendMessage, setTurnRunner, pump, MAX_HOPS } from './router.js';
+import { postChat, unreadChatFor, chatDerived } from './chatroom.js';
+import { getBrain, searchBrain, readBrain, listBrain } from './brain.js';
+import { listMemoryStore, writeMemoryStore } from './memstore.js';
 import { recordUsage } from './usage.js';
 
 export const MODEL_CHOICES = [
@@ -56,12 +59,19 @@ Tasks from the user land on your desk first. Your job is to ORCHESTRATE, not imp
   - If you are stuck or a request is outside your role, "escalate" to the coordinator instead of guessing.
   - Messages have a hop budget of ${MAX_HOPS}; long back-and-forths get cut off, so be decisive.
   - Be token-frugal: no courtesy messages (thanks, congrats, "got it") — a plain "ack" only when the sender truly needs confirmation. One message that does the work beats three that narrate it. Keep your private worklog note to one short line.
+- The office has ONE shared chatroom, #office — the centralized room where every agent and every human teammate shares work context. Post with chat_post when a finding, decision, or question matters beyond one person; unread chatroom messages appear in your turn context automatically. Mention @Name to get a specific teammate's attention — a mention wakes them, a plain post wakes nobody. Same etiquette as mail: short, decisive, no courtesy posts.
+- Chatroom threading is how work gets PROVEN, not decoration. Every chat message has an id like [ab12cd34]. When you answer a specific message, pass reply_to with that id — a threaded reply is what closes an open ask; posting next to it proves nothing. Mail tagged [#office <id>] is a chatroom mention of you: answer in the chatroom with chat_post + reply_to <id>, not send_message.
+- Chatroom markers (a line starting with the keyword): "WILL: <thing>" promises future work — it is tracked as open until YOU close it with a threaded reply containing "DONE: <what happened>"; your open promises follow you in your turn context. "DECISION-NEEDED: <question>" queues a call only the human user can make; a human closes it with a threaded "DECISION:" reply — never decide it yourself. "BLOCKED: <what> ON: <target>" declares a real dependency (target = an agent name, or an external thing like hardware or credentials) — it draws an edge on the office dependency graph until you clear it with a threaded "DONE:" reply; only this typed form counts, prose "I'm blocked" draws nothing.
 - The shared blackboard (blackboard_read / blackboard_append) is for notes everyone should see: decisions, findings, status.
 - Save durable personal learnings with memory_save; your saved memory appears below and follows you across conversations.
+- The office also keeps a shared TEAM memory store — mounted both ways: humans edit its files directly, you write with memory_write, and everyone reads it. Its index rides in your turn context; read a topic with brain_read("memory:<topic>.md"). Put durable knowledge the TEAM needs there (decisions, gotchas, service notes) — keep private observations in memory_save.
 - When a temp hire's assignment is complete, release them with dismiss_agent so the floor stays lean (coordinator: you can release anyone except yourself; others: only agents you hired).
 - update_task moves a task card on the office task board (statuses: inbox, in_progress, review, done). Update it when you start and finish task work.
 ${(agent.tools || []).includes('web') ? '- You can research on the live web with WebSearch and WebFetch. Cite the source URL for every claim you bring back.' : ''}
 ${(agent.tools || []).includes('files') ? '- You can read files in the office workspace with Read, Grep, and Glob.' : ''}
+${getBrain() ? `
+## Project brain — ${getBrain().name} (the office's centralized knowledge)
+All project truth lives in one read-only brain shared by the whole office: roots ${Object.keys(getBrain().roots).map((k) => `"${k}:"`).join(' and ')}. Use brain_search to find where something is covered, brain_read to read a file by ref (e.g. "${getBrain().hub || 'vault:README.md'}"), brain_list to browse. ${getBrain().hub ? `Start at ${getBrain().hub} for orientation.` : ''} Rules: answer project questions FROM the brain, not from memory — cite the ref (e.g. vault:glossary.md:12) for every claim you take from it; never paste long files into chat, reference refs instead; if the brain does not cover something, say so rather than guessing.` : ''}
 `;
 }
 
@@ -77,6 +87,12 @@ function formatIncoming(agent, batch) {
     `${i + 1}. From ${senderName(m.from)} (${m.from}) — [${m.act}]${m.taskId ? ` about ${m.taskId}` : ''}:\n"${m.body}"`);
   const tasks = listTasks().filter((t) => t.status !== 'done');
   const memory = readMemory(agent.id).trim();
+  // Chatroom delivery cursor: inject exactly what this agent has not seen,
+  // bounded; count the overflow instead of silently dropping it.
+  const { msgs: chat, older, lastTs } = unreadChatFor(agent.chatCursorTs, 25);
+  setAgentChatCursor(agent.id, lastTs);
+  const myPromises = chatDerived().promises.filter((p) => p.from === agent.id);
+  const memIndex = listMemoryStore().slice(0, 20);
   return `## Office roster (message ids you can send to; "user" reaches the human)
 This is the CURRENT floor and it SUPERSEDES any roster earlier in this conversation — anyone absent here has left; do not message them.
 ${rosterText(agent.id)}
@@ -84,6 +100,9 @@ ${memory ? `\n## Your long-term memory\n${memory}\n` : ''}
 
 ## Open tasks on the board
 ${tasks.length ? tasks.map((t) => `- ${t.id} [${t.status}] ${t.title}${t.assignedTo ? ` (assigned: ${t.assignedTo})` : ''}`).join('\n') : '(none)'}
+${chat.length ? `\n## #office chatroom — ${chat.length} unread for you${older ? ` (+${older} older unread not shown)` : ''} (ambient context; reply via chat_post with reply_to only if it concerns you)\n${chat.map((c) => `[${c.id}]${c.replyTo ? ` (re: ${c.replyTo})` : ''} ${c.name}${c.fromKind === 'agent' ? '' : ' (human)'}: ${c.body.slice(0, 300)}`).join('\n')}` : ''}
+${myPromises.length ? `\n## Your open chatroom promises (close each with a threaded reply carrying "DONE: <result>"${myPromises.some((p) => p.state === 'replied') ? '; a reply without DONE: does not close it' : ''})\n${myPromises.map((p) => `- [${p.id}] (${p.state}) WILL: ${p.text}`).join('\n')}` : ''}
+${memIndex.length ? `\n## Team memory store (shared; read via brain_read("memory:<file>"), update via memory_write)\n${memIndex.map((t) => `- ${t.topic} [${t.hash}] — ${t.hint}`).join('\n')}` : ''}
 
 ## New mail for you (${batch.length})
 ${lines.join('\n\n')}
@@ -146,6 +165,24 @@ function officeToolsFor(agent, nextHops) {
     },
   );
 
+  const memWrite = tool(
+    'memory_write',
+    'Write a topic file in the shared TEAM memory store — the office\'s mounted memory that humans and agents both read and edit. Use for durable project knowledge others need (decisions, gotchas, service notes). Read topics with brain_read("memory:<topic>.md"); do not duplicate what the brain vault already covers.',
+    {
+      topic: z.string().describe('Topic slug, e.g. "deploy-notes" or "api-quirks" (becomes <topic>.md)'),
+      content: z.string().describe('Markdown content. Keep it tight — this is shared context, not a scratchpad.'),
+      append: z.boolean().optional().describe('true = append to the existing topic instead of replacing it'),
+    },
+    async ({ topic, content, append }) => {
+      try {
+        const out = writeMemoryStore({ topic, content, append: !!append, by: agent.id });
+        return { content: [{ type: 'text', text: `${out.mode} ${out.topic} [${out.hash}] in the team memory store.` }] };
+      } catch (e) {
+        return { content: [{ type: 'text', text: String(e.message || e) }], isError: true };
+      }
+    },
+  );
+
   const spawn = tool(
     'spawn_subagent',
     'Hire a new specialist character into the office and hand them their first assignment. Use when no current teammate fits the work.',
@@ -186,6 +223,22 @@ function officeToolsFor(agent, nextHops) {
     },
   );
 
+  const chatPost = tool(
+    'chat_post',
+    'Post to #office, the shared office chatroom that every agent and human teammate reads. Mention @Name to wake a specific teammate; a plain post is ambient context and wakes nobody. Pass reply_to when answering a specific message — a threaded reply is what closes an ask or promise.',
+    {
+      body: z.string().describe('The chat message, short and in character. Use @Name to direct it at someone. Marker lines: "WILL: <thing>" (promise), "DONE: <result>" (in a threaded reply, closes your promise), "DECISION-NEEDED: <question>" (queues for the human).'),
+      reply_to: z.string().optional().describe('Id of the chat message you are answering, from its [id] tag'),
+    },
+    async ({ body, reply_to }) => {
+      const { msg, woke, failed } = postChat({ from: agent.id, fromKind: 'agent', name: agent.name, body, hops: nextHops, replyTo: reply_to || null });
+      const notes = [];
+      if (woke.length) notes.push(`mentioned & woke: ${woke.join(', ')}`);
+      if (failed.length) notes.push(`mention NOT delivered (hop cap): ${failed.join(', ')}`);
+      return { content: [{ type: 'text', text: `Posted to #office as [${msg.id}].${notes.length ? ` (${notes.join('; ')})` : ''}` }] };
+    },
+  );
+
   const taskUpdate = tool(
     'update_task',
     'Move a task card on the office board and/or assign it.',
@@ -204,10 +257,49 @@ function officeToolsFor(agent, nextHops) {
     },
   );
 
+  // Project-brain tools (only when a brain is configured): every agent gets
+  // the same read-only, bounded view of the project's vault + repo.
+  const brainTools = !getBrain() ? [] : [
+    tool(
+      'brain_search',
+      `Search the project brain (${getBrain().name}: Obsidian vault + repo) for a phrase. Returns ref:line hits. Use before answering any project question.`,
+      {
+        query: z.string().describe('Case-insensitive phrase to find, 2+ chars'),
+        root: z.string().optional().describe(`Limit to one root: ${Object.keys(getBrain().roots).join(' | ')}`),
+      },
+      async ({ query, root }) => {
+        try { return { content: [{ type: 'text', text: searchBrain(query, root || null) }] }; }
+        catch (e) { return { content: [{ type: 'text', text: String(e.message || e) }], isError: true }; }
+      },
+    ),
+    tool(
+      'brain_read',
+      'Read a file from the project brain by ref, e.g. "vault:000-HelloAlex-Hub.md" or "repo:docs/ROADMAP.md". Bounded to 300 lines per call.',
+      {
+        ref: z.string().describe('<root>:<relative/path> from brain_search or brain_list'),
+        offset: z.number().optional().describe('1-based start line (default 1)'),
+        limit: z.number().optional().describe('Lines to read (default/max 300)'),
+      },
+      async ({ ref, offset, limit }) => {
+        try { return { content: [{ type: 'text', text: readBrain(ref, offset || 1, limit || 300) }] }; }
+        catch (e) { return { content: [{ type: 'text', text: String(e.message || e) }], isError: true }; }
+      },
+    ),
+    tool(
+      'brain_list',
+      'List a directory in the project brain, e.g. "vault:" or "repo:docs".',
+      { ref: z.string().optional().describe('<root>:<relative/dir>; omit for the first root\'s top level') },
+      async ({ ref }) => {
+        try { return { content: [{ type: 'text', text: listBrain(ref || null) }] }; }
+        catch (e) { return { content: [{ type: 'text', text: String(e.message || e) }], isError: true }; }
+      },
+    ),
+  ];
+
   return createSdkMcpServer({
     name: 'office',
     version: '1.0.0',
-    tools: [sendTool, listTeam, bbRead, bbAppend, memSave, spawn, dismiss, taskUpdate],
+    tools: [sendTool, listTeam, chatPost, bbRead, bbAppend, memSave, memWrite, spawn, dismiss, taskUpdate, ...brainTools],
     // Keep office tools in the prompt instead of deferred behind ToolSearch —
     // saves one whole model round-trip per fresh session.
     alwaysLoad: true,

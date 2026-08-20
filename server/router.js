@@ -71,11 +71,23 @@ export function userMessages(sinceTs = 0) {
   return userInbox.filter((m) => m.ts > sinceTs);
 }
 
+// Global pause switch: mail keeps accumulating in inboxes, but no new turns
+// start until resumed (a cost brake for the dashboard's Controls page).
+let paused = false;
+export function setPaused(v) {
+  if (paused === !!v) return paused;
+  paused = !!v;
+  emit(paused ? 'scheduler_paused' : 'scheduler_resumed', {});
+  if (!paused) queueMicrotask(pump);
+  return paused;
+}
+export function isPaused() { return paused; }
+
 // The scheduler: run turns for agents with mail, respecting caps.
 const budgetWarned = new Set();
 
 export async function pump() {
-  if (!runTurn) return;
+  if (!runTurn || paused) return;
   for (const agentId of [...dirty]) {
     if (running.size >= MAX_CONCURRENT_TURNS) break;
     if (running.has(agentId)) continue;

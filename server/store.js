@@ -154,6 +154,13 @@ export function setAgentSession(id, sessionId) {
   if (agent) { agent.sessionId = sessionId; saveAgents(); }
 }
 
+// Chatroom delivery cursor: ts of the newest #office message this agent has
+// had injected into a turn. Guarantees no message is silently missed.
+export function setAgentChatCursor(id, ts) {
+  const agent = getAgent(id);
+  if (agent && agent.chatCursorTs !== ts) { agent.chatCursorTs = ts; saveAgents(); }
+}
+
 export function setAgentStatus(id, status, detail = '') {
   const agent = getAgent(id);
   if (agent && agent.status !== status) {
@@ -179,8 +186,8 @@ function pickColor(n) { return PALETTE[n % PALETTE.length]; }
 export function listTasks() { return state.tasks; }
 export function getTask(id) { return state.tasks.find((t) => t.id === id); }
 
-export function createTask({ title, description = '' }) {
-  const task = { id: makeId('task'), title, description, status: 'inbox', assignedTo: null, createdAt: Date.now(), updatedAt: Date.now() };
+export function createTask({ title, description = '', status = 'inbox', assignedTo = null, key = null, source = null }) {
+  const task = { id: makeId('task'), key, source, title, description, status, assignedTo, createdAt: Date.now(), updatedAt: Date.now() };
   state.tasks.push(task);
   saveTasks();
   emit('task_created', { task });
